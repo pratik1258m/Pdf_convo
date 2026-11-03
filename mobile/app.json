@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "Convo PDF",
+    "slug": "convo-pdf",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "convopdf",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pratik.convopdf",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true,
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "package": "com.pratik.convopdf",
+      "usesCleartextTraffic": true,
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": ["android.permission.RECORD_AUDIO", "android.permission.INTERNET"],
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Convo PDF uses the microphone to turn your spoken question into text.",
+          "speechRecognitionPermission": "Convo PDF uses on-device speech recognition so you can ask about your PDF by voice.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ],
+      "expo-document-picker"
+    ]
+  }
+}

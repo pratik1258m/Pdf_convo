@@ -1,0 +1,47 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Large ML Model Weights (Exceed GitHub 100MB file limit)
+*.onnx
+tts_models/**/.cache/
+tts_models/samples/
+audio_cache/
+*.part
+
+# Node & Frontend Build
+node_modules/
+mobile/node_modules/
+mobile/dist/
+mobile/.expo/
+.expo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+
+# Mobile & Desktop Native Artifacts
+.gradle/
+buildOutputCleanup/
+*.apk
+*.aab
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

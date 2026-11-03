@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice-to-Voice PDF Conversation Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --primary: #3b82f6;
+      --primary-glow: rgba(59, 130, 246, 0.35);
+      --accent: #10b981;
+      --warning: #f59e0b;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 24px 16px; }
+    .container { width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 20px; }
+    
+    /* Header */
+    .header { text-align: center; margin-bottom: 8px; }
+    .header h1 { font-size: 26px; font-weight: 800; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+    
+    /* Cards */
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
+    
+    /* Upload Section */
+    .upload-area { border: 2px dashed #374151; border-radius: 8px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; }
+    .upload-area:hover, .upload-area.dragover { border-color: var(--primary); background: rgba(59, 130, 246, 0.05); }
+    .doc-pill { display: inline-flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); border: 1px solid var(--accent); color: #34d399; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 10px; }
+
+    /* Controls Bar */
+    .controls { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+    select { background: #1f2937; border: 1px solid #374151; color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none; cursor: pointer; }
+    
+    /* Conversation Window */
+    .convo-box { height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 12px; border: 1px solid #1f2937; border-radius: 8px; background: #0c121e; }
+    .msg { display: flex; flex-direction: column; max-width: 82%; animation: fadeIn 0.25s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .msg.user { align-self: flex-end; }
+    .msg.user .bubble { background: #2563eb; color: #fff; border-radius: 14px 14px 2px 14px; }
+    .msg.ai { align-self: flex-start; }
+    .msg.ai .bubble { background: #1f2937; color: var(--text); border-radius: 14px 14px 14px 2px; border: 1px solid #374151; }
+    .bubble { padding: 12px 16px; font-size: 14px; line-height: 1.5; }
+    .meta-tag { font-size: 11px; margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+    .badge-grounded { color: #34d399; font-weight: 600; }
+    .badge-out { color: var(--warning); font-weight: 600; }
+
+    /* Mic & Interaction Area */
+    .voice-control { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 16px; }
+    .mic-btn { width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); border: none; color: #fff; font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px var(--primary-glow); transition: all 0.2s; outline: none; }
+    .mic-btn:hover { transform: scale(1.05); }
+    .mic-btn.listening { background: linear-gradient(135deg, #ef4444, #dc2626); box-shadow: 0 0 30px rgba(239, 68, 68, 0.7); animation: pulse 1.2s infinite; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    
+    .text-input-bar { display: flex; width: 100%; gap: 8px; }
+    .text-input-bar input { flex: 1; background: #1f2937; border: 1px solid #374151; color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; outline: none; }
+    .text-input-bar input:focus { border-color: var(--primary); }
+    .send-btn { background: var(--primary); color: #fff; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    
+    .status-text { font-size: 13px; color: var(--text-muted); min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    
+    <div class="header">
+      <h1>Voice-to-Voice Document Assistant</h1>
+      <p>Real-Time Q&amp;A &bull; Grounded Document Context &bull; Polite Out-of-Scope Fallback</p>
+    </div>
+
+    <!-- Upload Card -->
+    <div class="card">
+      <div class="upload-area" id="dropArea" onclick="document.getElementById('pdfInput').click()">
+        <input type="file" id="pdfInput" accept="application/pdf" style="display:none;" onchange="handleFileUpload(event)">
+        <p style="font-size:15px; font-weight:600; margin-bottom:4px;">📄 Click or Drag &amp; Drop PDF Document</p>
+        <p style="font-size:12px; color:var(--text-muted);">Supports any report, technical spec, or syllabus PDF</p>
+        <div id="docPill" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Conversation Card -->
+    <div class="card">
+      <div class="controls">
+        <div style="font-size:13px; font-weight:600; color:var(--text-muted);">CONVERSATION LOG</div>
+        <div>
+          <label style="font-size:12px; color:var(--text-muted); margin-right:6px;">Reply voice:</label>
+          <!-- Replaced from /api/voices as soon as the server answers, so the
+               local voices appear and the network ones stay if they do not. -->
+          <select id="voiceSelect">
+            <option value="en-IN-PrabhatNeural">Prabhat (Indian English - Male)</option>
+            <option value="en-IN-NeerjaNeural">Neerja (Indian English - Female)</option>
+            <option value="hi-IN-MadhurNeural">Madhur (Hindi / Hinglish - Male)</option>
+            <option value="hi-IN-SwaraNeural">Swara (Hindi / Hinglish - Female)</option>
+          </select>
+          <!-- The local Hindi-and-English voice answers in both languages, so the
+               language to listen in has to be settable apart from it. -->
+          <label style="font-size:12px; color:var(--text-muted); margin:0 6px 0 14px;">Listen in:</label>
+          <select id="micSelect">
+            <option value="">Follow the voice</option>
+            <option value="en-IN">English</option>
+            <option value="hi-IN">हिन्दी</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="convo-box" id="convoBox">
+        <div class="msg ai">
+          <div class="bubble">
+            Hello! Please upload a PDF file, then tap the microphone or type below to talk with me about your document.
+          </div>
+        </div>
+      </div>
+
+      <div class="voice-control">
+        <button class="mic-btn" id="micBtn" onclick="toggleListening()">🎙️</button>
+        <div class="status-text" id="statusText">Tap mic to speak (or type below)</div>
+
+        <div class="text-input-bar">
+          <input type="text" id="textInput" placeholder="Ask anything about the PDF (or any general question)..." onkeydown="if(event.key==='Enter') sendTextQuery()">
+          <button class="send-btn" onclick="sendTextQuery()">Send</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let isListening = false;
+    let recognition = null;
+    const currentAudio = new Audio();
+
+    // Check Web Speech API
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-IN';
+
+      recognition.onstart = () => {
+        isListening = true;
+        document.getElementById('micBtn').classList.add('listening');
+        document.getElementById('statusText').innerText = 'Listening to your voice... Speak now!';
+      };
+
+      recognition.onresult = (event) => {
+        const first = event.results && event.results[0];
+        const transcript = first && first[0] ? (first[0].transcript || '').trim() : '';
+        if (!transcript) {
+          document.getElementById('statusText').innerText = 'Nothing came through. Tap the mic and speak closer.';
+          return;
+        }
+        document.getElementById('textInput').value = transcript;
+        sendQuery(transcript);
+      };
+
+      recognition.onerror = (e) => {
+        console.error('Speech recognition error:', e);
+        stopListening();
+        document.getElementById('statusText').innerText = 'Mic error or cancelled. Try typing below.';
+      };
+
+      recognition.onend = () => {
+        stopListening();
+      };
+    }
+
+    function toggleListening() {
+      if (!recognition) {
+        alert('Web Speech API is not supported in this browser. Please type in the input box below.');
+        return;
+      }
+      if (isListening) {
+        recognition.stop();
+        stopListening();
+      } else {
+        recognition.lang = selectedMicLocale();
+        recognition.start();
+      }
+    }
+
+    function stopListening() {
+      isListening = false;
+      document.getElementById('micBtn').classList.remove('listening');
+      document.getElementById('statusText').innerText = 'Processing your speech...';
+    }
+
+    async function handleFileUpload(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      document.getElementById('statusText').innerText = 'Parsing and indexing PDF...';
+      try {
+        const res = await fetch('/api/upload_pdf', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) {
+          document.getElementById('statusText').innerText = 'Upload refused. Pick another PDF.';
+          alert('Upload failed: ' + (data.detail || 'Unknown error'));
+          return;
+        }
+        const pill = document.getElementById('docPill');
+        pill.style.display = 'inline-flex';
+        pill.className = 'doc-pill';
+        // The filename arrives from the client, so it is written as text.
+        pill.textContent = `${data.stats.filename} - ${data.stats.total_pages} Pages (${data.stats.total_chunks} Chunks Indexed)`;
+
+        appendMessage('ai', data.welcome_text, false, []);
+        document.getElementById('statusText').innerText = 'Document ready! Tap mic to speak.';
+        speakWelcome(data.welcome_segments || []);
+      } catch (err) {
+        alert('Upload error: ' + err.message);
+      }
+    }
+
+    /** The upload response carries the welcome text, not clips, so ask for the voice separately. */
+    async function speakWelcome(texts) {
+      if (!texts.length) return;
+      try {
+        const res = await fetch('/api/speak', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ texts, voice: document.getElementById('voiceSelect').value })
+        });
+        const data = await res.json();
+        if (!res.ok) return;
+        playClips((data.segments || []).map(s => s.audio_url).filter(Boolean), texts.join(' '));
+      } catch (err) {
+        /* the welcome line is already on screen */
+      }
+    }
+
+    function sendTextQuery() {
+      const input = document.getElementById('textInput');
+      const val = input.value.trim();
+      if (!val) return;
+      input.value = '';
+      sendQuery(val);
+    }
+
+    async function sendQuery(queryText) {
+      appendMessage('user', queryText);
+      document.getElementById('statusText').innerText = 'Thinking & synthesizing voice...';
+
+      const voice = document.getElementById('voiceSelect').value;
+      try {
+        const res = await fetch('/api/ask_voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: queryText, voice: voice })
+        });
+        const data = await res.json();
+        // `partial` and `text_only` arrive as 200 with the answer intact, so the
+        // status code decides whether this is a failure, not data.status.
+        if (!res.ok) {
+          appendMessage('ai', 'Error: ' + (data.detail || 'Could not process query.'));
+          document.getElementById('statusText').innerText = 'Ask again, or check the server.';
+          return;
+        }
+        appendMessage('ai', data.answer, data.is_out_of_context, data.sources, data.no_document);
+        const clips = (data.segments || []).map(s => s.audio_url).filter(Boolean);
+        if (data.status === 'partial') {
+          const missing = Math.max(1, (data.requested || 0) - clips.length);
+          appendMessage('ai', `Part of that answer could not be spoken (${missing} sentence${missing > 1 ? 's' : ''} missing). The full text is above.`, false, []);
+        }
+        playClips(clips, data.answer);
+        document.getElementById('statusText').innerText = clips.length
+          ? 'Voice answer playing... Tap mic to speak again.'
+          : 'Answered in text - no voice clip came back.';
+      } catch (err) {
+        appendMessage('ai', 'Connection error: ' + err.message);
+      }
+    }
+
+    function appendMessage(sender, text, isOut = false, sources = [], noDocument = false) {
+      const convoBox = document.getElementById('convoBox');
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `msg ${sender}`;
+
+      // The answer is copied out of an uploaded PDF, so it goes in as text, never as markup.
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      msgDiv.appendChild(bubble);
+
+      let label = null;
+      if (sender === 'ai') {
+        if (noDocument) label = ['badge-out', 'No document loaded'];
+        else if (isOut) label = ['badge-out', 'Polite Out-of-Context Fallback'];
+        else if (sources.length > 0) label = ['badge-grounded', `Grounded in Document (Page ${sources.join(', ')})`];
+      }
+      if (label) {
+        const tag = document.createElement('div');
+        tag.className = 'meta-tag';
+        const badge = document.createElement('span');
+        badge.className = label[0];
+        badge.textContent = label[1];
+        tag.appendChild(badge);
+        msgDiv.appendChild(tag);
+      }
+
+      convoBox.appendChild(msgDiv);
+      convoBox.scrollTop = convoBox.scrollHeight;
+    }
+
+    /** Play every clip of an answer in order; dropping the tail would silently shorten the reply. */
+    function playClips(urls, fallbackText) {
+      if (!urls || !urls.length) {
+        if (fallbackText) speakBrowserFallback(fallbackText);
+        return;
+      }
+      let index = 0;
+      const next = () => {
+        if (index >= urls.length) return;
+        const url = urls[index++];
+        currentAudio.src = url;
+        currentAudio.onended = next;
+        currentAudio.onerror = next;
+        currentAudio.play().catch(e => {
+          console.log('Audio stream failed, using browser voice fallback:', e);
+          speakBrowserFallback(fallbackText);
+        });
+      };
+      currentAudio.pause();
+      next();
+    }
+
+    function speakBrowserFallback(text) {
+      if ('speechSynthesis' in window && text) {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = selectedVoiceLocale();
+        window.speechSynthesis.speak(utter);
+      }
+    }
+
+    const VOICE_LOCALES = {};
+
+    /** The server knows which speakers this machine can actually run. */
+    async function populateVoices() {
+      const select = document.getElementById('voiceSelect');
+      try {
+        const res = await fetch('/api/voices');
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.voices) || !data.voices.length) return;
+        select.innerHTML = '';
+        for (const voice of data.voices) {
+          VOICE_LOCALES[voice.id] = voice.locale || 'en-IN';
+          const option = document.createElement('option');
+          option.value = voice.id;
+          option.disabled = voice.available === false;
+          option.textContent = option.disabled
+            ? `${voice.name} - ${voice.reason || 'not available on this machine'}`
+            : voice.name;
+          if (voice.id === data.default_voice) option.selected = true;
+          select.appendChild(option);
+        }
+      } catch (error) {
+        // The network voices stay in the markup, so a dead /api/voices still
+        // leaves the demo able to speak.
+      }
+    }
+
+    function selectedVoiceLocale() {
+      return VOICE_LOCALES[document.getElementById('voiceSelect').value] || 'en-IN';
+    }
+
+    function selectedMicLocale() {
+      const chosen = document.getElementById('micSelect').value;
+      return chosen || selectedVoiceLocale();
+    }
+
+    populateVoices();
+  </script>
+</body>
+</html>
