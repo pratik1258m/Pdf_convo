@@ -27,6 +27,7 @@ STOP_WORDS = {
     "while", "who", "whom", "why", "will", "with", "you", "your", "yours", "yourself",
     "make", "made", "also", "therefore", "however", "much", "many", "anyone", "someone",
     "get", "got", "use", "used", "using", "want", "need", "tell", "say", "said", "explain",
+    "hi", "hello", "hey", "please", "kindly", "namaste", "thank", "thanks", "ok", "okay",
 }
 
 # Latin words, Devanagari words, and numerals. The Devanagari range has to be
@@ -60,7 +61,7 @@ _CODE_LINE_RE = re.compile(
 # "required/require" without a stemming library. Longest suffix first.
 _SUFFIXES = sorted(
     ("ization", "isations", "isation", "ements", "ement", "ingly", "edly", "ation", "ations",
-     "ness", "ment", "ments", "ing", "ings", "ed", "es", "s"),
+     "ness", "ment", "ments", "ing", "ings", "ed", "es", "s", "e"),
     key=len,
     reverse=True,
 )
@@ -81,20 +82,47 @@ _HINDI_STOP_WORDS = {
     "होता", "होती", "होते", "होना", "दिया", "गया", "जाता", "जाती", "अन्य", "कुछ", "इस", "इसके",
     "जिस", "जो", "तथा", "उस", "उसके", "कोई", "नहीं", "बहुत", "पहले", "बाद", "तब", "इसलिए",
     "माना", "माने", "कहा", "कहते", "रहा", "रही", "गई", "गया", "लेना", "देना", "वाला", "वाली",
+    # The interrogative pronouns, which are the same closed class English already
+    # carries (who, what, when, where, why, how). "सी"/"सा" are the qualifier particles
+    # that combine with कौन to mean "which", and carry nothing on their own.
+    "कौन", "कब", "कहाँ", "कहां", "क्यो", "क्यों", "कैसे", "कितना", "कितनी", "कितने",
+    "कौनसा", "कौनसी", "कौनसे", "सी", "सा",
+}
+_HINGLISH_STOP_WORDS = {
+    "ye", "yeh", "woh", "wo", "kya", "hai", "hain", "tha", "thi", "the", "ka", "ki", "ke", "ko", "se",
+    "mein", "me", "par", "pe", "aur", "ya", "bhi", "liye", "kar", "kare", "karna", "karne", "karta",
+    "karti", "karte", "hoga", "hogi", "hoge", "diya", "gaya", "gayi", "gaye", "batao", "bataiye",
+    "bata", "kaho", "bolo", "kaun", "kaunsa", "kaunsi", "kaise", "kaha", "kahan", "kab", "kyu", "kyun",
+    "kitna", "kitni", "kitne", "isme", "usme", "inme", "unme", "banaya", "wala", "wali", "wale",
+    "hota", "hoti", "hote", "jaise", "sab", "sabhi", "kuch", "apna", "apni", "apne",
 }
 STOP_WORDS |= {word for word in _HINDI_STOP_WORDS}
+STOP_WORDS |= {word for word in _HINGLISH_STOP_WORDS}
 
 # Words that say what the caller wants *done*, or *where* to look, rather than what
 # the document is about. They are excluded from the in-context decision: a spoken
 # "summarise the reimbursement page" asks about reimbursement, and the verb
 # "summarise" is not evidence that the question is outside this file. This is a
 # closed class of English speech-act verbs and structure nouns - not a topic list.
-_SPEECH_ACT = {
+_SPEECH_ACT_WORDS = (
     "summarise", "summarize", "summary", "list", "enumerate", "outline", "overview",
     "describe", "detail", "define", "mention", "recap", "brief", "elaborate", "recount",
-    "narrate", "highlight", "walkthrough",
+    "narrate", "highlight", "walkthrough", "answer", "answering", "answell", "explained",
     "section", "heading", "chapter", "page", "topic", "contents", "segment",
-}
+    "pdf", "pdfs", "document", "documents", "doc", "docs", "file", "files",
+    "according", "accord", "given", "mentioned", "written", "stated", "tell", "says", "say",
+    "show", "find", "check", "attached", "uploaded", "content",
+    "key", "main", "major", "central", "primary", "core", "principal", "important", "critical",
+    "kind", "type", "sort", "going", "develop", "developing", "development",
+    "application", "app", "apps", "system", "systems", "project", "poc",
+    "build", "building", "create", "creating", "work", "working", "use", "using",
+    "approach", "supposed", "plan", "planning", "feature", "features", "benefit", "benefits",
+    "takeaway", "takeaways", "point", "points", "aspect", "aspects",
+    "character", "characters", "role", "roles", "theme", "themes",
+    "exactly", "actually", "basically", "specifically", "precisely", "really",
+    "simply", "just", "whole", "overall", "full", "complete", "everything", "anything", "something", "well",
+    "प्रकार", "तरह", "बारे", "बनाना", "बनाने", "सिस्टम", "एप्लिकेशन", "प्रोजेक्ट",
+)
 
 
 def stem(word: str) -> str:
@@ -104,11 +132,36 @@ def stem(word: str) -> str:
                 return word[: -len(suffix)]
         return word
     if len(word) <= 4:
+        # A short word is usually a stem already, but `pdfs`, `urls` and `apis` are
+        # plurals of words the document writes short. Folding them is what lets a
+        # question about "documents" reach the line that says "96 technical PDFs".
+        # Forms whose s belongs to the word - this, was, bus, loss, bias - are left.
+        if len(word) == 4 and word.endswith("s") and not word.endswith(("ss", "us", "is", "as", "os", "ns")):
+            return word[:-1]
         return word
-    for suffix in _SUFFIXES:
-        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
-            return word[: -len(suffix)]
+    # Fold repeatedly: `values` loses `s` then `e` to reach `valu`, the same base
+    # `value` reaches on its own, and a single pass would leave the plural one step
+    # short of the word the document actually wrote.
+    for _ in range(3):
+        for suffix in _SUFFIXES:
+            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                word = word[: -len(suffix)]
+                break
+        if len(word) <= 4:
+            break
     return word
+
+
+# Measured on the folded forms, because the terms this is compared against come out of
+# `tokenize`: "summarise" folds to "summaris", and an unfolded set would stop excluding
+# the verb and start treating it as evidence about the document.
+_SPEECH_ACT = {stem(word) for word in _SPEECH_ACT_WORDS}
+
+# The same reason, applied to the stop words. "कौन" and "सी" are as much connective
+# tissue as "which" and "is", but the list spells them in their dictionary forms while
+# every token in the index has been folded - comparing the two unfolded leaves a
+# language's question words counting as the subject of its own questions.
+_STOP_STEMS = frozenset(stem(word) for word in STOP_WORDS)
 
 
 def tokenize(text: str) -> List[str]:
@@ -127,10 +180,10 @@ def tokenize(text: str) -> List[str]:
         seen: set = set()
         for piece in [raw] + re.split(r"[-_./\\]", raw):
             token = piece.strip("'’-\u0964\u0965")
-            if token in STOP_WORDS or (len(token) < 2 and not token.isdigit()):
+            if len(token) < 2 and not token.isdigit():
                 continue
             token = stem(token)
-            if not token or token in seen:
+            if not token or token in STOP_WORDS or token in _STOP_STEMS or token in seen:
                 continue
             seen.add(token)
             tokens.append(token)
@@ -154,6 +207,25 @@ _NUMBER_WORDS = {
     "nineteen": "19", "twenty": "20", "thirty": "30", "forty": "40", "fifty": "50",
     "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90", "hundred": "100",
 }
+
+# The word-forms of the same table, folded the way the index folds everything else, so
+# a passage that says "six annotators" is recognised as carrying a figure.
+_NUMBER_WORD_STEMS = {token for word in list(_ORDINALS) + list(_NUMBER_WORDS) for token in tokenize(word)}
+
+
+_FIGURE_RE = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w./-])")
+
+
+def carries_figure(text: str) -> bool:
+    """Does this run of words state an amount, in digits or in words.
+
+    A price list writes `5 years` and a manual writes `twelve days`; treating only the
+    first as a figure demotes the sentence that answers "how long" in the file's own
+    style. A digit inside a name is not an amount: `BM25`, `HTTP 409`'s neighbour
+    `python3` and `index.android` all carry digits without saying how many of anything
+    there are, and counting them would rate every line in the file as a figure.
+    """
+    return bool(_FIGURE_RE.search(text)) or bool(set(tokenize(text)) & _NUMBER_WORD_STEMS)
 
 # The pairs a reader actually paraphrases across, curated rather than learned: a
 # lexical ranker has no other way to connect "which file holds the output" to the
@@ -182,9 +254,26 @@ for _group in (
     ("dataset", "benchmark", "corpus", "collection"),
     ("discontinue", "retire", "deprecated", "unavailable", "withdrawn", "end of life"),
     ("ban", "banned", "bans", "prohibit", "prohibited", "forbid", "forbidden", "bar", "disallow"),
+    ("document", "pdf", "paper", "text"),
+    ("login", "logged", "log"),
+    ("choose", "chosen", "chose", "select", "picked", "tuned"),
     ("duration", "period", "length", "span"),
     ("page", "section", "heading", "clause"),
     ("employ", "utilise", "leverage", "used"),
+    ("aim", "goal", "objective", "purpose", "intent", "target"),
+    ("tool", "stack", "library", "framework", "platform", "software", "utility"),
+    ("arjun", "arjuna"),
+    ("krishna", "krsna"),
+    ("bhima", "bhim"),
+    ("karna", "karn"),
+    ("duryodhan", "duryodhana"),
+    ("pandav", "pandava", "pandavas"),
+    ("dhritarashtra", "dhritarastra"),
+    ("parameter", "parameters", "value", "values"),
+    ("database", "db", "storage", "datastore", "data", "supabase", "sql"),
+    ("model", "llm", "ai", "generator"),
+    ("speech", "audio", "voice", "stt", "tts", "sound", "transcription"),
+    ("recommend", "recommended", "suggest", "suggested", "choice", "chosen", "select", "candidate"),
 ):
     _expanded = set()
     for _word in _group:
@@ -194,6 +283,83 @@ for _group in (
     if len(_expanded) >= 2:
         _PARAPHRASE_GROUPS.append(_expanded)
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+def fold_devanagari(text: str) -> str:
+    """Fold Devanagari ligatures, reph, and viramas to match legacy font encodings."""
+    return text.replace("र्", "").replace("\u094d", "")
+
+_INDIC_TRANSLITERATION_MAP: Dict[str, List[str]] = {
+    "arjun": ["अजुन", "अर्जुन", "पाथ", "पार्थ", "धनंजय"],
+    "arjuna": ["अजुन", "अर्जुन", "पाथ", "पार्थ", "धनंजय"],
+    "krishna": ["कृ", "कृष्ण", "ीकृ", "भगवान्ीकृ", "वासुदेव"],
+    "krsna": ["कृ", "कृष्ण", "ीकृ", "भगवान्ीकृ", "वासुदेव"],
+    "bhima": ["भीम", "भीमसेन", "भीमजी"],
+    "bhim": ["भीम", "भीमसेन", "भीमजी"],
+    "pandav": ["पाडव", "पाण्डव", "पाडवक", "पाडवम"],
+    "pandava": ["पाडव", "पाण्डव", "पाडवक", "पाडवम"],
+    "pandavas": ["पाडव", "पाण्डव", "पाडवक", "पाडवम"],
+    "karna": ["कण", "कर्ण", "राधेय"],
+    "karn": ["कण", "कर्ण", "राधेय"],
+    "draupadi": ["ौपद", "द्रौपदी", "द्रौपद", "कृ णया"],
+    "duryodhan": ["युधन", "दुर्योधन", "धृतरापु"],
+    "duryodhana": ["युधन", "दुर्योधन", "धृतरापु"],
+    "yudhishthir": ["युध र", "युधिष्ठिर", "धमराज"],
+    "yudhishthira": ["युध र", "युधिष्ठिर", "धमराज"],
+    "dhritarashtra": ["धृतरा", "धृतराष्ट्र"],
+    "sanjay": ["संजय", "सजय", "सूत"],
+    "sanjaya": ["संजय", "सजय", "सूत"],
+    "vyas": ["व्यास", "वास", "वैशपायन"],
+    "vyasa": ["व्यास", "वास", "वैशपायन"],
+    "drona": ["ोण", "द्रोण", "ोणाचाय"],
+    "dronacharya": ["ोणाचाय", "द्रोणाचार्य"],
+    "bhishma": ["भी", "भीष्म", "पतामह", "पितामह"],
+    "kuru": ["कुरु", "कौरव"],
+    "kaurav": ["कौरव", "कौरवक"],
+    "kaurava": ["कौरव", "कौरवक"],
+    "kauravas": ["कौरव", "कौरवक"],
+    "kurukshetra": ["कु े", "कुरुक्षेत्र"],
+    "hastinapur": ["हनापुर", "हस्तिनापुर"],
+    "gita": ["गीता"],
+    "shloka": ["ोक", "श्लोक"],
+    "parva": ["पव", "पर्व"],
+    "adhyaya": ["ाया", "अध्याय"],
+    "nakula": ["नकु ल", "नकुल"],
+    "nakul": ["नकु ल", "नकुल"],
+    "sahadeva": ["सहदेव"],
+    "sahadev": ["सहदेव"],
+    "gandhari": ["गाधारी", "गांधारी"],
+    "kunti": ["कु ती", "कुंती"],
+    "madri": ["मा ी", "माद्री"],
+    "ashwatthama": ["अथामा", "अश्वत्थामा"],
+}
+
+# Front matter restates the whole file, so it shares some words with every specific
+# question asked against it and out-ranks the section that actually states the fact.
+# Same reasoning as a contents page, one layer up: an abstract is a recap of the body,
+# not a substitute for it.
+_RECAP_HEADING_RE = re.compile(
+    r"\b(abstract|summary|summar(y|ise|ize)|overview|conclusion|concluding|keywords?|highlights?)\b",
+    re.I,
+)
+
+# The question words that can only be answered with a figure. This is a closed class of
+# interrogatives and their objects, the same handful in every language, and it names no
+# subject a document could be about: it asks what *shape* the answer must have.
+_QUANTITY_ASK_RE = re.compile(
+    r"\bhow (?:many|much|long|often|old|far|high|deep|wide)\b"
+    r"|\b(?:number|quantity|total|sum|cost|price|fee|charge|amount|count|duration|percentage|"
+    r"ratio|speed|weight|height|version|year|date|time)\b"
+    r"|\bwhich year\b|\bin what year\b|\bhow much is\b|\bhow many are there\b"
+    # Asking which settings were picked is asking for their values, and a file answers
+    # that with figures rather than with the sentence that introduced them.
+    r"|\b(?:hyper)?parameters?\b|\b(?:which|what)\s+(?:value|setting|option|default)s?\b"
+    # "Which grade is a fail" puts a noun between the question word and the verb and then
+    # names the class the value decides: the caller wants the number that separates one
+    # member of a set from another. "Which website is loaded" has a participle in that
+    # slot and wants a name, so it stays a plain lookup.
+    r"|\b(?:which|what)\s+\w+\s+(?:is|are|was|were)\s+(?:a|an|the|above|below|under|over|more|less|fewer|at)\b",
+    re.I,
+)
 
 
 def query_terms(text: str) -> List[str]:
@@ -261,6 +427,37 @@ def split_sentences(text: str) -> List[str]:
     return sentences
 
 
+def merge_hyphenated_lines(lines: List[str]) -> List[str]:
+    """Rejoin the words a scanned page split at a line break: 'main-' then 'tain'.
+
+    Soft hyphenation is why a search for one word finds the other half of a different
+    word, and why the sentence a caller is handed stops short. The halves belong
+    together before the text is indexed or quoted, not after.
+    """
+    out: List[str] = []
+    for line in lines:
+        previous = out[-1] if out else ""
+        if previous.endswith("-") and len(previous) > 3 and re.match(r"^[a-z]", line):
+            out[-1] = f"{previous[:-1]}{line}"
+        else:
+            out.append(line)
+    return out
+
+
+def flow_lines(text: str) -> str:
+    """One readable flow when the page set its text in two- and three-word lines.
+
+    A scanned book puts each line of a sentence on its own row, and a model handed
+    that reads a list of fragments and correctly concludes the page says nothing. The
+    model and the sentence picker both need the sentence back, so the breaks come out
+    here - and only where the lines really are that short, so a manual keeps its steps.
+    """
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) < 4 or sum(len(line.split()) for line in lines) > 7 * len(lines):
+        return "\n".join(lines)
+    return re.sub(r"(\w)-\s+([a-z])", r"\1\2", " ".join(merge_hyphenated_lines(lines)))
+
+
 def looks_like_heading(line: str) -> bool:
     stripped = line.strip()
     if not stripped or len(stripped) > _HEADING_MAX_CHARS:
@@ -283,6 +480,20 @@ def looks_like_heading(line: str) -> bool:
     upper = stripped.isupper() and len(words) <= 6
     return dotted or upper or title_case
 
+_LEADER_RE = re.compile(r"(?:\.\s+){2,}\.")
+
+
+def one_edit_apart(term: str, other: str) -> bool:
+    """True when the two words differ by a single substitution, insertion or loss."""
+    if term == other:
+        return True
+    if len(term) == len(other):
+        return sum(1 for left, right in zip(term, other) if left != right) <= 1
+    if abs(len(term) - len(other)) != 1:
+        return False
+    longer, shorter = (term, other) if len(term) > len(other) else (other, term)
+    return any(longer[:cut] + longer[cut + 1:] == shorter for cut in range(len(longer)))
+
 
 class DocumentChunk:
     def __init__(self, text: str, page_num: int, chunk_id: int, heading: str = ""):
@@ -290,6 +501,18 @@ class DocumentChunk:
         self.page_num = page_num
         self.chunk_id = chunk_id
         self.heading = heading
+        # Dot leaders are the shape of a table of contents, not of content: the page
+        # lists section names with their numbers, so it holds every word a question
+        # asks about and answers none of them. Kept searchable, kept out of the lead.
+        self.index_page = bool(_LEADER_RE.search(self.text))
+        # A recap heading (Abstract, Summary, Conclusion) names the whole file, so the
+        # passage under it repeats every topic without stating any of them; the section
+        # that carries the fact outranks it.
+        self.recap_heading = bool(heading and _RECAP_HEADING_RE.search(heading))
+        # A quantity question is answered by a figure, and a file spells figures both
+        # ways: "12 days" and "twelve days". Measured in `_build_index`, where the
+        # passage's own vocabulary has already been worked out.
+        self.has_digit = False
         self.token_counts: Counter = Counter()
         self.body_counts: Counter = Counter()
         self.heading_counts: Counter = Counter()
@@ -305,7 +528,7 @@ class SearchHit:
     """One ranked passage, with the measurements that put it in the top set."""
 
     def __init__(self, chunk: DocumentChunk, score: float, coverage: float, terms: int,
-                 idf_mass: float = 0.0, concepts: int = 0, focus: bool = False):
+                 idf_mass: float = 0.0, concepts: int = 0, focus: bool = False, ideas: float = 0.0):
         self.chunk = chunk
         self.score = score
         self.coverage = coverage
@@ -314,6 +537,12 @@ class SearchHit:
         # How many of the question's *ideas* the passage carries, counting a word the
         # document spells differently as the same idea.
         self.concepts = concepts
+        # The same share as `coverage`, but a word counts as found when the document
+        # says it or says the same thing another way. The gate is asked "is this what
+        # the file is about", and a file that writes `96 technical PDFs` is about the
+        # number of documents. `coverage` stays literal, because a caller reads it as
+        # how much of what they said came back.
+        self.ideas = ideas
         # Whether the passage carries the question's focus word - the first content
         # word, which in "which shoes are required" is `shoes`, not `required`.
         self.focus = focus
@@ -371,6 +600,22 @@ class PDFRAGEngine:
         self.heading_boost = heading_boost
         self.section_match_bonus = section_match_bonus
         self.section_conflict_penalty = section_conflict_penalty
+        # A contents page names every section in the book, so it out-matches the page
+        # that actually says the thing. It stays searchable for the question about what
+        # the file contains, and loses to real text for every other question.
+        self.index_page_penalty = 0.35
+        # A recap is a summary of the body, and the body states the fact itself, so the
+        # passage under "Abstract" competes at a discount rather than head to head.
+        self.recap_penalty = 0.7
+        # "How many", "what is the fee" and "which year" are answered by a figure. A
+        # passage holding no digit cannot be that answer however many of the question's
+        # words it repeats, so a figure earns its place in the ranking rather than the
+        # reader having to hope the right paragraph also happens to rank first.
+        self.quantity_bonus = 1.15
+        # Applied to the prose instead: equal weighting leaves a figure where it was and
+        # lifts it over prose that matched no better, while a file that spells its
+        # counts as "twelve days" stays reachable because the demotion is not a veto.
+        self.quantity_conflict_penalty = 1.0 / self.quantity_bonus
         self.current_filename: str = ""
         self.chunks: List[DocumentChunk] = []
         self.raw_text: str = ""
@@ -378,6 +623,12 @@ class PDFRAGEngine:
         self.total_pages: int = 0
         self.profile: Dict[str, Any] = {}
         self._df: Dict[str, int] = {}
+        # The page, not the passage, is where an idea pair can be checked: a book cut
+        # into eight-word passages cannot hold two of a question's words in one strip,
+        # and refusing such a question would be a comment on the segmenter, not on the
+        # file. `page_terms` is the union of a page's vocabulary, built once per load.
+        self._page_terms: Dict[int, Counter] = {}
+        self._heading_terms: set = set()
         self._avg_len: float = 1.0
         self._avg_body_len: float = 1.0
         self._avg_heading_len: float = 1.0
@@ -446,7 +697,7 @@ class PDFRAGEngine:
 
     # ------------------------------------------------------------------ extraction
 
-    def _page_rows(self, page) -> Optional[List[Tuple[str, float]]]:
+    def _page_rows(self, page) -> Optional[List[Tuple[str, float, float]]]:
         """One entry per visual line, with its font size, when the PDF reveals both.
 
         A PDF that lays a table out publishes the geometry: the cells of a row sit
@@ -459,6 +710,7 @@ class PDFRAGEngine:
         spans: List[Tuple[str, float, float, float]] = []
 
         def visit(text: str, _cm, tm, _font, size) -> None:
+            text = (text or "").replace("\x00", "")
             if text and text.strip():
                 spans.append((text, float(tm[4] if tm else 0.0), float(tm[5] if tm else 0.0),
                               float(size or 0.0)))
@@ -491,6 +743,16 @@ class PDFRAGEngine:
                     row_y = y
                 row_last_x = cell_x
 
+        # A grid sets its columns at the same positions on many rows. Justified prose -
+        # and every scanned book puts one word per text span - gives each span its own
+        # position once, so a row whose columns do not recur on the page is a sentence
+        # and must be read as one.
+        starts: Counter = Counter()
+        for row in rows:
+            if len(row) >= 3:
+                for value in {round(cell[0]) for cell in row}:
+                    starts[value] += 1
+
         out: List[Tuple[str, float, float]] = []
         for row in rows:
             xs = [cell[0] for cell in row]
@@ -502,7 +764,9 @@ class PDFRAGEngine:
             # stopped short, which is the difference between a wrapped sentence and a
             # finished one - and every line of a paragraph is set at the same size.
             x1 = max(cell_x + len(piece) * max(size, 1.0) * 0.5 for cell_x, piece, _ in cells)
-            if len(cells) >= 3 and len(set(round(value, 1) for value in xs)) >= 3 and max(xs) - min(xs) >= 12:
+            distinct = {round(cell[0]) for cell in cells}
+            supported = sum(1 for value in distinct if starts[value] >= 3)
+            if len(cells) >= 3 and supported >= 3 and len(set(round(value, 1) for value in xs)) >= 3 and max(xs) - min(xs) >= 12:
                 # A row of distinct columns: keep the cells in one line, separated,
                 # so a parameter row or a price row stays a single quotable fact.
                 out.append((" | ".join(cell[1] for cell in cells), size, x1))
@@ -539,16 +803,27 @@ class PDFRAGEngine:
 
     @staticmethod
     def _is_size_heading(text: str, size: float, body_size: float) -> bool:
-        if not body_size or size <= 1.01 or size <= body_size + 0.01:
+        # A fraction of a point is not a title. Scanned pages carry per-line size
+        # jitter - 7.0 against a 7.01 body - and reading that as a heading cut an
+        # OCR'd book into four-word passages. A real heading is set visibly larger
+        # (at least 15% larger than body or 1.2pt). Flowcharts, arrows, and tiny
+        # fragments are body content, never headings.
+        if not body_size or size <= 1.01 or size <= body_size + max(1.2, body_size * 0.15):
             return False
         stripped = text.strip()
         if len(stripped) > _HEADING_MAX_CHARS or not stripped:
+            return False
+        if any(arrow in stripped for arrow in ("→", "->", "=>", "-->", "↔")):
+            return False
+        if len(stripped) <= 2:
             return False
         return not stripped.endswith((".", "!", "?", ";", ","))
 
     @staticmethod
     def _clean_page(raw: str) -> str:
-        raw = raw.replace("\x07", "\t")
+        raw = raw.replace("\x07", "\t").replace("\x00", "")
+        # Rejoin broken matras in Devanagari custom fonts
+        raw = re.sub(r"([\u0900-\u097F])\s+([\u093E-\u094F\u0901-\u0903])", r"\1\2", raw)
         lines = [line.rstrip() for line in raw.splitlines()]
         kept = [line for line in lines if not re.fullmatch(r"\s*page\s*\d+\s*", line, re.I)]
         text = "\n".join(kept)
@@ -567,6 +842,14 @@ class PDFRAGEngine:
         PDF actually carries - or because the old capitalisation heuristics read it
         as a title, which is all a document with no typography can offer.
         """
+        joined: List[Tuple[str, float, float]] = []
+        for text, size, x1 in rows:
+            if joined and joined[-1][0].endswith("-") and len(joined[-1][0]) > 3 and re.match(r"^[a-z]", text):
+                previous = joined[-1]
+                joined[-1] = (f"{previous[0][:-1]}{text}", previous[1], previous[2])
+            else:
+                joined.append((text, size, x1))
+        rows = joined
         heading = inherited_heading
         attached = False
         buffer: List[str] = []
@@ -597,8 +880,18 @@ class PDFRAGEngine:
             buffer, buffer_words = [], 0
 
         for text, size, _ in rows:
+            # A line that does not end a sentence is the middle of a wrapped
+            # paragraph, and whatever comes after it is that paragraph's next line,
+            # not a title. An OCR'd book keeps no usable typography, and reading every
+            # short line as a heading cut its paragraphs into four-word passages.
+            # A numbered section title overrides that: "Practical 3 - Login" starts a
+            # section even when the line above it is a command with no full stop.
+            continued = bool(buffer) and not self._SENTENCE_END.search(buffer[-1])
+            numbered = heading_section(text) is not None
             if self._is_size_heading(text, size, body_size) or (
-                looks_like_heading(text) and not re.search(r"[.!?]$", text)
+                looks_like_heading(text)
+                and not re.search(r"[.!?]$", text)
+                and (numbered or not continued)
             ):
                 flush()
                 label = text.rstrip(" :")
@@ -636,7 +929,7 @@ class PDFRAGEngine:
             if len(lines) == 1:
                 units.extend(split_sentences(lines[0]) or lines)
                 continue
-            units.extend(lines)
+            units.extend(merge_hyphenated_lines(lines))
         return units
 
     _CAPTION_RE = re.compile(r"^(?:table|figure|tab|exhibit|chart)\s*\d+\b", re.I)
@@ -775,6 +1068,8 @@ class PDFRAGEngine:
 
     def _build_index(self) -> None:
         self._df = {}
+        self._page_terms = {}
+        self._heading_terms = set()
         lengths: List[int] = []
         body_lengths: List[int] = []
         heading_lengths: List[int] = []
@@ -786,14 +1081,18 @@ class PDFRAGEngine:
             chunk.body_length = len(body_tokens)
             chunk.heading_length = len(heading_tokens)
             chunk.token_counts = chunk.body_counts + chunk.heading_counts
+            chunk.has_digit = carries_figure(chunk.text) or carries_figure(chunk.heading or "")
             chunk.length = chunk.body_length + chunk.heading_length
             lengths.append(chunk.length)
             body_lengths.append(max(1, chunk.body_length))
             heading_lengths.append(max(1, chunk.heading_length))
             for term in set(chunk.token_counts):
                 self._df[term] = self._df.get(term, 0) + 1
+            self._page_terms.setdefault(chunk.page_num, Counter()).update(chunk.token_counts)
+            self._heading_terms.update(set(chunk.heading_counts))
 
         self._doc_count = len(self.chunks)
+        self.is_devanagari = any(_DEVANAGARI_RE.search(chunk.text) for chunk in self.chunks[:50])
         self._avg_len = (sum(lengths) / len(lengths)) if lengths else 1.0
         self._avg_body_len = (sum(body_lengths) / len(body_lengths)) if body_lengths else 1.0
         self._avg_heading_len = (sum(heading_lengths) / len(heading_lengths)) if heading_lengths else 1.0
@@ -829,6 +1128,24 @@ class PDFRAGEngine:
         """How many passages use this word. Zero means the document never says it."""
         return self._df.get(term, 0)
 
+    def heading_terms(self) -> set:
+        """Every word the file itself used as a title.
+
+        A caller who says "summarise the reimbursement page" has named one section of
+        the file, and an answer describing the file as a whole is about the wrong part
+        of it. Structure questions are only answered from the layout when the question
+        names nothing inside the layout.
+        """
+        return self._heading_terms
+
+    def page_ideas(self, page_num: int, terms: List[str], partners: Dict[str, List[str]]) -> int:
+        """How many of the question's ideas this page carries, under any spelling."""
+        counts = self._page_terms.get(page_num)
+        if counts is None:
+            return 0
+        return sum(1 for term in terms
+                   if counts.get(term, 0) or any(counts.get(partner, 0) for partner in partners.get(term, ())))
+
     def idf(self, term: str) -> float:
         df = self._df.get(term, 0)
         if self._doc_count == 0:
@@ -858,6 +1175,29 @@ class PDFRAGEngine:
         if total <= 0:
             return 0.0
         found = sum(self.idf(term) for term in present if counts.get(term, 0))
+        return found / total
+
+    def _idea_coverage(self, counts: Counter, terms: List[str], partners: Dict[str, List[str]]) -> float:
+        """`coverage`, with the document's own synonyms counted as the same idea.
+
+        Weighed by the idf of whichever word the document actually uses, so a passage
+        is credited for the rarity it carries rather than for a lucky spelling.
+        """
+        mass: Dict[str, float] = {}
+        for term in terms:
+            if term in self._df:
+                mass[term] = self.idf(term)
+                continue
+            synonyms = [partner for partner in partners.get(term, ()) if partner in self._df]
+            if synonyms:
+                mass[term] = max(self.idf(partner) for partner in synonyms)
+        total = sum(mass.values())
+        if total <= 0:
+            return 0.0
+        found = sum(
+            value for term, value in mass.items()
+            if counts.get(term, 0) or any(counts.get(partner, 0) for partner in partners.get(term, ()))
+        )
         return found / total
 
     def matched_term_count(self, counts: Counter, query_terms: List[str]) -> int:
@@ -891,6 +1231,29 @@ class PDFRAGEngine:
                         continue
                     seen.add(alternative)
                     out.setdefault(term, []).append(alternative)
+            # Universal near-match / inflection / phonetic alternate
+            if term not in self._df:
+                near = self._one_edit_known(term)
+                if near and near in self._df and near not in seen:
+                    seen.add(near)
+                    out.setdefault(term, []).append(near)
+            # Transliteration for Indic / Devanagari documents
+            lower_term = term.lower()
+            if getattr(self, "is_devanagari", False):
+                if lower_term in _INDIC_TRANSLITERATION_MAP:
+                    for alt in _INDIC_TRANSLITERATION_MAP[lower_term]:
+                        if alt in self._df and alt not in seen:
+                            seen.add(alt)
+                            out.setdefault(term, []).append(alt)
+                        folded = fold_devanagari(alt)
+                        if folded in self._df and folded not in seen:
+                            seen.add(folded)
+                            out.setdefault(term, []).append(folded)
+                elif _DEVANAGARI_RE.search(term):
+                    folded = fold_devanagari(term)
+                    if folded in self._df and folded not in seen:
+                        seen.add(folded)
+                        out.setdefault(term, []).append(folded)
         return out
 
     def _paraphrase_partners(self, terms: List[str]) -> List[str]:
@@ -902,6 +1265,34 @@ class PDFRAGEngine:
         """How many of the question's ideas the passage carries, under any spelling."""
         return sum(1 for term in terms
                     if counts.get(term, 0) or any(counts.get(partner, 0) for partner in partners.get(term, ())))
+
+    def _one_edit_known(self, term: str) -> Optional[str]:
+        """Return closest known word in the index within one edit or trailing vowel alternate."""
+        if len(term) < 4:
+            return None
+        # Trailing vowel / schwa alternates (e.g. yudhishthir -> yudhishthira, pandav -> pandava, schema -> scheme)
+        if self._df.get(term + "a", 0) >= 1:
+            return term + "a"
+        if self._df.get(term + "e", 0) >= 1:
+            return term + "e"
+        if self._df.get(term + "s", 0) >= 1:
+            return term + "s"
+        if term.endswith("a") and len(term) > 3 and self._df.get(term[:-1], 0) >= 1:
+            return term[:-1]
+        head = term[:3]
+        for known in self._df:
+            if self._df[known] < 1:
+                continue
+            if len(known) < 4 or not known.startswith(head):
+                continue
+            if abs(len(known) - len(term)) <= 1 and one_edit_apart(term, known):
+                return known
+        return None
+
+    @property
+    def words_avg(self) -> float:
+        """Words per passage in this document - how finely the file had to be cut."""
+        return self._avg_len
 
     def search(
         self,
@@ -925,15 +1316,42 @@ class PDFRAGEngine:
         # The words the user actually said, before ordinals and spelled-out
         # numbers are added: the gate below asks whether *they* are document
         # vocabulary, and an injected "five" would fail its own test.
-        content = [term for term in Counter(tokenize(query)) if term not in _SPEECH_ACT]
-        informative = [term for term in spoken if term not in _SPEECH_ACT]
+        # Exclude meta terms and tokens appearing in the document's filename.
+        doc_terms = set(tokenize(self.current_filename or ""))
+        meta_terms = _SPEECH_ACT | doc_terms
+        content = [term for term in Counter(tokenize(query)) if term not in meta_terms]
+        if not content:
+            content = [term for term in Counter(tokenize(query)) if term not in _SPEECH_ACT] or list(Counter(tokenize(query)))
+        informative = [term for term in spoken if term not in meta_terms]
+        if not informative:
+            informative = [term for term in spoken if term not in _SPEECH_ACT] or list(spoken)
         partners = self.partner_map(spoken)
         terms = spoken + self._paraphrase_partners(spoken)
-        focus = content[0] if content else ""
-        focus_rare = self._df.get(focus, 10 ** 6) <= max(2, 0.4 * self._doc_count)
-        # A question word the document has never used, and has no synonym for, is the
-        # signal that the question is about something outside this file.
-        unknown = [term for term in content if term not in self._df and term not in partners]
+        # The part of the question this file has a word for. People do not speak in
+        # index terms - "which kind of LLM are we going to use to develop this
+        # application" wraps one lookupable subject in five ordinary words - so the
+        # subject decides what a question is about, not the count of odd words.
+        near = {
+            term: self._one_edit_known(term)
+            for term in content
+            if term not in self._df and term not in partners
+        }
+        for term, match in near.items():
+            if match and match not in partners.get(term, ()):
+                partners.setdefault(term, []).append(match)
+                if match not in terms:
+                    terms.append(match)
+        mineable = [term for term in content if term in self._df or partners.get(term) or near.get(term)]
+        focus = mineable[0] if mineable else (content[0] if content else (spoken[0] if spoken else ""))
+        unknown = [
+            term for term in content
+            if term not in self._df and term not in partners and not near.get(term)
+        ]
+        central = any(self._df.get(term, 0) * 8 >= self._doc_count for term in mineable)
+        strays = bool(content) and (not mineable or (len(unknown) > len(mineable) and not central))
+        # Does this question want a figure? Decided once, before the scan, because it
+        # changes what a passage is worth.
+        asks_quantity = bool(_QUANTITY_ASK_RE.search(query))
 
         scored: List[SearchHit] = []
         target_section = requested_section(query)
@@ -942,6 +1360,14 @@ class PDFRAGEngine:
             body = self._bm25(chunk.body_counts, chunk.body_length, terms, self._avg_body_len)
             heading = self._bm25(chunk.heading_counts, chunk.heading_length, terms, self._avg_heading_len)
             raw = body + self.heading_boost * heading
+            if chunk.index_page:
+                raw *= self.index_page_penalty
+            if chunk.recap_heading:
+                raw *= self.recap_penalty
+            if asks_quantity and raw > 0 and not chunk.has_digit:
+                # Not a veto: the passage that says "twelve days" without writing 12 is
+                # still reachable, but only when it matches harder than the figures.
+                raw *= self.quantity_conflict_penalty
             if target_section is not None and numbered_sections:
                 # A question about "the first practical" is answered by section 1,
                 # not by whatever page repeats its words most often.
@@ -952,15 +1378,26 @@ class PDFRAGEngine:
                     raw *= self.section_conflict_penalty
             if raw <= 0:
                 continue
+            focus_matched = bool(
+                not focus
+                or chunk.token_counts.get(focus, 0)
+                or any(chunk.token_counts.get(p, 0) for p in partners.get(focus, ()))
+            )
+            cov = max(self.coverage(chunk.token_counts, spoken), self.coverage(chunk.token_counts, informative))
+            idea_cov = max(
+                self._idea_coverage(chunk.token_counts, spoken, partners),
+                self._idea_coverage(chunk.token_counts, informative, partners)
+            )
             scored.append(
                 SearchHit(
                     chunk,
                     score=round(raw, 4),
-                    coverage=self.coverage(chunk.token_counts, spoken),
+                    coverage=cov,
                     terms=self.matched_term_count(chunk.token_counts, spoken),
                     idf_mass=self.matched_idf_mass(chunk.token_counts, spoken),
                     concepts=self._concept_count(chunk.token_counts, informative, partners),
-                    focus=bool(chunk.token_counts.get(focus, 0)),
+                    ideas=idea_cov,
+                    focus=focus_matched,
                 )
             )
 
@@ -968,9 +1405,31 @@ class PDFRAGEngine:
             return [], False, 0.0
 
         scored.sort(key=lambda hit: hit.score, reverse=True)
+
+        def accepted(hit: SearchHit) -> bool:
+            if hit.coverage < threshold and hit.ideas < threshold:
+                return False
+            if hit.concepts >= min_terms:
+                return True
+            effective_min = min(min_terms, max(1, len(mineable)))
+            if len(mineable) <= 1 or len(content) <= 2:
+                # When only one distinct concept from the query exists in the document vocab,
+                # requiring page_ideas >= 2 is impossible and rejects valid passages.
+                return bool(focus) and not strays and hit.focus
+            # Three or more ideas, and the passage carries one of them. Then the question
+            # is only in this file if the *page* puts those ideas together.
+            return hit.focus and self.page_ideas(hit.page_num, informative, partners) >= effective_min
+
+        # Judged before the page cap, not after: the one line that answers a question
+        # can rank below four that only share a paraphrase, and dropping it for
+        # diversification would refuse a document that plainly holds the fact.
+        matched = [hit for hit in scored if accepted(hit)]
+        if not matched:
+            return [], False, 0.0
+
         kept: List[SearchHit] = []
         per_page_count: Dict[int, int] = {}
-        for hit in scored:
+        for hit in matched:
             used = per_page_count.get(hit.page_num, 0)
             if used >= per_page:
                 continue
@@ -979,24 +1438,10 @@ class PDFRAGEngine:
             if len(kept) >= top_k:
                 break
 
-        best = max(kept, key=lambda hit: hit.coverage)
-
-        def accepted(hit: SearchHit) -> bool:
-            if hit.coverage < threshold:
-                return False
-            if hit.concepts >= min_terms:
-                return True
-            # The two-idea floor exists to stop one generic word from carrying a whole
-            # question, so it is released only when the question's focus word is the
-            # document's own rare vocabulary and every other word of the question is an
-            # idea the document has. "What is earthing" and "which shoes are required"
-            # pass; "explain how a black hole forms" fails on the second half - *black*
-            # and *hole* are ideas this file never mentions, and matching the word
-            # *form* somewhere in it does not answer that question.
-            return bool(focus) and not unknown and hit.focus and focus_rare
-
-        matched = [hit for hit in kept if accepted(hit)]
-        return matched, bool(matched), round(best.coverage, 4)
+        # Report what the accepted evidence is worth, not what the best rejected
+        # passage would have been worth: a refusal that claims a perfect match reads
+        # as though the engine threw the answer away, and it did not.
+        return kept, True, round(max(max(hit.coverage, hit.ideas) for hit in kept), 4)
 
     def sections(self) -> List[Tuple[int, str]]:
         """The document's own headings, in reading order, with the page each one opens.
@@ -1022,15 +1467,28 @@ class PDFRAGEngine:
         """Pick the sentences that carry the question's rare terms, in document order."""
         if not sentences:
             return []
+        # The same vocabulary bridge the passages were ranked with. A line that says the
+        # document's own word for what the caller asked is the answer, and a ranker that
+        # only sees the words the caller spoke rates it as silent.
         terms = list(Counter(query_terms(query)))
+        terms = terms + self._paraphrase_partners(terms)
         if not terms:
             return sentences[:limit]
 
         scored = []
+        # `rank_sentences` is handed passages, and a passage is not the page: what the
+        # file spells as "six annotators" is a figure even where no digit was written,
+        # so the rule only applies once there is a figure somewhere among the candidates.
+        asks_quantity = bool(_QUANTITY_ASK_RE.search(query)) and any(carries_figure(sentence) for sentence in sentences)
         for position, sentence in enumerate(sentences):
             counts = Counter(tokenize(sentence))
             length = sum(counts.values()) or 1
             raw = self._bm25(counts, length, terms)
+            # The same rule the passages are ranked by, applied to the line that is
+            # actually quoted: a "how many" answer that repeats the question's nouns
+            # without ever giving the number is not the answer.
+            if asks_quantity and raw > 0 and not carries_figure(sentence):
+                raw *= self.quantity_conflict_penalty
             scored.append((raw, position, sentence, counts))
 
         scored.sort(key=lambda item: item[0], reverse=True)

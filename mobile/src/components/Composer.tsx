@@ -82,13 +82,13 @@ export function Composer({
   }, [autoFocusSignal])
 
   const statusText = listening
-    ? 'Listening — release to send'
+    ? 'Listening. Tap the mic again to send.'
     : phase === 'stopping'
-      ? 'Finalising what I heard…'
+      ? 'Finalising what I heard'
       : busy
         ? 'Thinking'
         : voiceAvailable
-          ? 'Hold the mic to speak, or type below'
+          ? 'Tap the mic to speak, tap again to send. Or type below.'
           : 'Voice input needs the built app. Tap the field and use the keyboard microphone.'
 
   return (
@@ -106,7 +106,7 @@ export function Composer({
         <View style={styles.listeningRow}>
           <LevelMeter level={level} />
           <Text style={styles.interim} numberOfLines={2}>
-            {draft ? draft : 'Say your question…'}
+            {draft ? draft : 'Say your question'}
           </Text>
           <Pressable onPress={onTalkCancel} hitSlop={10} accessibilityRole="button" accessibilityLabel="Cancel voice input">
             <Text style={styles.cancel}>Cancel</Text>
@@ -116,10 +116,9 @@ export function Composer({
 
       <View style={styles.row}>
         <Pressable
-          onPressIn={onTalkStart}
-          onPressOut={onTalkStop}
+          onPress={listening ? onTalkStop : onTalkStart}
           accessibilityRole="button"
-          accessibilityLabel={listening ? 'Release to send your question' : 'Hold to speak'}
+          accessibilityLabel={listening ? 'Stop listening and send the question' : 'Start speaking'}
           accessibilityState={{ disabled: !voiceAvailable }}
           style={({ pressed }) => [
             styles.mic,

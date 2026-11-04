@@ -62,6 +62,21 @@ export type Timings = {
   tts_ms?: number
 }
 
+/** One completed exchange, older first.
+ *  Snake_case because that is the shape `QueryRequest.history` in server.py reads,
+ *  and `query` is what the follow-up expansion and the correction re-ask look at. */
+export type AskHistoryTurn = {
+  query: string
+  answer: string
+}
+
+export type AskTextRequest = {
+  query: string
+  voice?: string
+  /** Omitted entirely when there is nothing completed to send. */
+  history?: AskHistoryTurn[]
+}
+
 export type AskTextResponse = {
   status: string
   query: string

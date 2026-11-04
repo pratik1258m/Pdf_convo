@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { colors, font, radius, spacing } from '../theme'
 import { Chip } from './ui'
-import { formatLatency, timeLabel } from '../utils/format'
+import { formatLatency, plural, timeLabel } from '../utils/format'
 import type { ChatMessage } from '../types'
 
 type Props = {
@@ -12,9 +12,16 @@ type Props = {
   playingSegment: number
   onReplay: (message: ChatMessage) => void
   onRetry: (message: ChatMessage) => void
+  /**
+   * Stage timings, match score and which model or voice produced the reply. They are
+   * true measurements, but a caller listening to an answer has no use for them and
+   * seeing the engine name makes the reply look like a system readout rather than a
+   * person, so they live behind Settings unless the developer switch is on.
+   */
+  showTelemetry: boolean
 }
 
-function MessageBubbleInner({ message, isPlaying, playingSegment, onReplay, onRetry }: Props) {
+function MessageBubbleInner({ message, isPlaying, playingSegment, onReplay, onRetry, showTelemetry }: Props) {
   if (message.role === 'system') {
     return (
       <View style={styles.systemWrap}>
@@ -39,7 +46,7 @@ function MessageBubbleInner({ message, isPlaying, playingSegment, onReplay, onRe
         ]}
       >
         {pending ? (
-          <Text style={styles.pendingText}>Searching the document for the exact passage…</Text>
+          <Text style={styles.pendingText}>Searching the document for the exact passage</Text>
         ) : (
           <Text style={[styles.text, isUser ? styles.userText : null]}>{message.text}</Text>
         )}
@@ -50,7 +57,9 @@ function MessageBubbleInner({ message, isPlaying, playingSegment, onReplay, onRe
               {message.failed ? <Chip label="Failed" tone="warn" /> : null}
               {message.noDocument && !message.failed ? <Chip label="No document loaded" tone="warn" /> : null}
               {message.outOfContext && !message.failed && !message.noDocument ? (
-                <Chip label="Outside this document" tone="warn" />
+                // Provenance, not a fault: the turn may carry a complete answer that
+                // simply did not come from this file.
+                <Chip label="Outside this document" tone="default" />
               ) : null}
               {(message.sources ?? []).map((page) => (
                 <Chip key={page} label={`Page ${page}`} tone={message.outOfContext ? 'default' : 'accent'} />
@@ -60,29 +69,29 @@ function MessageBubbleInner({ message, isPlaying, playingSegment, onReplay, onRe
             {makingVoice ? (
               <Text style={styles.voicePending}>
                 {clips.length
-                  ? `Answer is on screen — speaking now, ${clips.length} clip${
-                      clips.length === 1 ? '' : 's'
-                    } ready and more still synthesizing…`
-                  : 'Answer is on screen — synthesizing the voice reply…'}
+                  ? `Speaking now: ${clips.length} ${plural(clips.length, 'clip', 'clips')} ready and more still being made`
+                  : 'Answer is on screen and the voice reply is being made'}
               </Text>
             ) : null}
 
             <View style={styles.metaRow}>
               <Text style={styles.meta}>{timeLabel(message.createdAt)}</Text>
-              {formatLatency(message.latencyMs) ? (
+              {showTelemetry && formatLatency(message.latencyMs) ? (
                 <Text style={styles.meta}> • on screen {formatLatency(message.latencyMs)}</Text>
               ) : null}
-              {formatLatency(message.timings?.retrieval_ms) ? (
+              {showTelemetry && formatLatency(message.timings?.retrieval_ms) ? (
                 <Text style={styles.meta}> • retrieval {formatLatency(message.timings?.retrieval_ms)}</Text>
               ) : null}
-              {formatLatency(message.timings?.tts_ms) ? (
+              {showTelemetry && formatLatency(message.timings?.tts_ms) ? (
                 <Text style={styles.meta}> • speech {formatLatency(message.timings?.tts_ms)}</Text>
               ) : null}
-              {typeof message.score === 'number' ? (
+              {showTelemetry && typeof message.score === 'number' && !message.outOfContext ? (
                 <Text style={styles.meta}> • match {message.score.toFixed(2)}</Text>
               ) : null}
-              {message.engine ? <Text style={styles.engine}> • {message.engine}</Text> : null}
-              {message.voice ? <Text style={styles.meta}> • {message.voice.split('-').slice(0, 2).join('-')}</Text> : null}
+              {showTelemetry && message.engine ? <Text style={styles.engine}> • {message.engine}</Text> : null}
+              {showTelemetry && message.voice ? (
+                <Text style={styles.meta}> • {message.voice.split('-').slice(0, 2).join('-')}</Text>
+              ) : null}
               {clips.length && !message.failed ? (
                 <Pressable
                   onPress={() => onReplay(message)}

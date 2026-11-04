@@ -42,107 +42,13 @@ logger = logging.getLogger(__name__)
 # Voices are data, not code: one entry per speaker, and `engine` picks the
 # provider that can actually make audio for it.
 VOICE_CATALOG: List[Dict[str, Any]] = [
-    # ---- local Piper voices: instant, offline, mono 22.05 kHz
-    {
-        "id": "en_US-ryan-medium",
-        "name": "Ryan (local - English - Male)",
-        "locale": "en-US",
-        "gender": "Male",
-        "recommended": True,
-        "engine": "piper",
-        "format": "wav",
-        "local": True,
-        "model": "en_US-ryan-medium.onnx",
-    },
-    {
-        "id": "en_US-lessac-medium",
-        "name": "Lessac (local - English - Neutral)",
-        "locale": "en-US",
-        "gender": "Neutral",
-        "recommended": False,
-        "engine": "piper",
-        "format": "wav",
-        "local": True,
-        "model": "en_US-lessac-medium.onnx",
-    },
-    {
-        "id": "hi_IN-pratham-medium",
-        "name": "Pratham (local - Hindi / Hinglish - Male)",
-        "locale": "hi-IN",
-        "gender": "Male",
-        "recommended": False,
-        "engine": "piper",
-        "format": "wav",
-        "local": True,
-        "model": "hi_IN-pratham-medium.onnx",
-    },
-    {
-        "id": "hi_IN-priyamvada-medium",
-        "name": "Priyamvada (local - Hindi / Hinglish - Female)",
-        "locale": "hi-IN",
-        "gender": "Female",
-        "recommended": False,
-        "engine": "piper",
-        "format": "wav",
-        "local": True,
-        "model": "hi_IN-priyamvada-medium.onnx",
-    },
-    {
-        "id": "hi_IN-rohan-medium",
-        "name": "Rohan (local - Hindi / Hinglish - Male)",
-        "locale": "hi-IN",
-        "gender": "Male",
-        "recommended": False,
-        "engine": "piper",
-        "format": "wav",
-        "local": True,
-        "model": "hi_IN-rohan-medium.onnx",
-    },
-    # ---- local Supertonic 3: one speaker, both languages, 44.1 kHz
-] + [
-    {
-        "id": f"supertonic-{style}",
-        "name": f"Supertonic {style} (local - Hindi and English - {'Male' if style.startswith('M') else 'Female'})",
-        "locale": "en-IN",
-        "gender": "Male" if style.startswith("M") else "Female",
-        "recommended": style == "M1",
-        "engine": "supertonic",
-        "format": "wav",
-        "local": True,
-        "model": style,
-        "languages": "Hindi and English in one voice",
-    }
-    for style in ("M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5")
-] + [
-    # ---- network Edge voices: unchanged, still the most natural Indian English
-    {
-        "id": "en-IN-PrabhatNeural",
-        "name": "Prabhat (Edge - Indian English - Male)",
-        "locale": "en-IN",
-        "gender": "Male",
-        "recommended": True,
-        "engine": "edge",
-        "format": "mp3",
-        "local": False,
-        "model": "",
-    },
-    {
-        "id": "en-IN-NeerjaNeural",
-        "name": "Neerja (Edge - Indian English - Female)",
-        "locale": "en-IN",
-        "gender": "Female",
-        "recommended": True,
-        "engine": "edge",
-        "format": "mp3",
-        "local": False,
-        "model": "",
-    },
+    # ---- 1. Primary Natural Human Voice (Edge Neural - exact match to user voice sample)
     {
         "id": "hi-IN-MadhurNeural",
-        "name": "Madhur (Edge - Hindi / Hinglish - Male)",
+        "name": "Madhur (Natural Human Hindi & English - Male)",
         "locale": "hi-IN",
         "gender": "Male",
-        "recommended": False,
+        "recommended": True,
         "engine": "edge",
         "format": "mp3",
         "local": False,
@@ -150,25 +56,78 @@ VOICE_CATALOG: List[Dict[str, Any]] = [
     },
     {
         "id": "hi-IN-SwaraNeural",
-        "name": "Swara (Edge - Hindi / Hinglish - Female)",
+        "name": "Swara (Natural Human Hindi & English - Female)",
         "locale": "hi-IN",
         "gender": "Female",
+        "recommended": True,
+        "engine": "edge",
+        "format": "mp3",
+        "local": False,
+        "model": "",
+    },
+    # ---- 2. VoiceStudio Supertonic 3 (Local-first from debpalash/voicestudio)
+    {
+        "id": "supertonic-M1",
+        "name": "Supertonic M1 (VoiceStudio Local - Hindi & English - Male)",
+        "locale": "en-IN",
+        "gender": "Male",
+        "recommended": True,
+        "engine": "supertonic",
+        "format": "wav",
+        "local": True,
+        "model": "M1",
+        "languages": "Hindi and English bilingual",
+    },
+    {
+        "id": "supertonic-F1",
+        "name": "Supertonic F1 (VoiceStudio Local - Hindi & English - Female)",
+        "locale": "en-IN",
+        "gender": "Female",
+        "recommended": False,
+        "engine": "supertonic",
+        "format": "wav",
+        "local": True,
+        "model": "F1",
+        "languages": "Hindi and English bilingual",
+    },
+    # ---- 3. Indian English & Test Baseline
+    {
+        "id": "en-IN-PrabhatNeural",
+        "name": "Prabhat (Edge - Indian English - Male)",
+        "locale": "en-IN",
+        "gender": "Male",
         "recommended": False,
         "engine": "edge",
         "format": "mp3",
         "local": False,
         "model": "",
     },
+    {
+        "id": "en_US-ryan-medium",
+        "name": "Ryan (Local Piper - English - Male)",
+        "locale": "en-US",
+        "gender": "Male",
+        "recommended": False,
+        "engine": "piper",
+        "format": "wav",
+        "local": True,
+        "model": "en_US-ryan-medium.onnx",
+    },
 ]
 
 VOICE_BY_ID: Dict[str, Dict[str, Any]] = {voice["id"]: voice for voice in VOICE_CATALOG}
 VOICE_IDS = set(VOICE_BY_ID)
 
-# Preference order for a server that has no voice configured: local first,
-# because the round trip is what makes an answer feel late.
-AUTO_DEFAULT_ORDER = ["supertonic-M1", "en_US-ryan-medium", "hi_IN-pratham-medium", "en-IN-PrabhatNeural"]
+# Preference order: Madhur (matches test_voice.mp3) first, then Swara, then VoiceStudio M1
+AUTO_DEFAULT_ORDER = [
+    "hi-IN-MadhurNeural",
+    "hi-IN-SwaraNeural",
+    "supertonic-M1",
+    "en-IN-PrabhatNeural",
+    "en_US-ryan-medium",
+]
 
-FALLBACK_VOICE = "en-IN-PrabhatNeural"
+FALLBACK_VOICE = "hi-IN-MadhurNeural"
 
 DEFAULT_RATE = "+8%"
 

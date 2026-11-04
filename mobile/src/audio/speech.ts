@@ -21,7 +21,7 @@ function normalizeLevel(value: number): number {
 }
 
 const ERROR_COPY: Record<string, string> = {
-  'no-speech': 'No speech detected. Hold the mic and speak for a second longer.',
+  'no-speech': 'No speech detected. Tap the mic and speak for a second longer.',
   network: 'Recognition needs internet, or switch to an on-device language in Android settings.',
   'not-allowed': 'Microphone or speech permission was denied. Enable it in Settings.',
   'service-not-allowed': 'Speech recognition permission was denied. Enable it in Settings.',
@@ -38,7 +38,9 @@ const ERROR_COPY: Record<string, string> = {
 
 export function describeSpeechError(code: string, rawMessage?: string): string {
   const friendly = ERROR_COPY[code]
-  if (friendly) return rawMessage ? `${friendly} (${rawMessage})` : friendly
+  // A known code already says what happened in the app's own words; the platform's
+  // raw reason ("No speech was detected.") repeats it in worse font, so it stays out.
+  if (friendly) return friendly
   return rawMessage || 'Recognition failed.'
 }
 

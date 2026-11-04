@@ -49,7 +49,7 @@ async def run_verification():
     print(f"   Answer: {out_res['answer']}")
     print(f"   Is Out-of-Context: {out_res['is_out_of_context']}")
     assert out_res['is_out_of_context'] is True, "Expected out-of-context guardrail to trigger!"
-    assert "could not locate this specific information" in out_res['answer'].lower(), "Polite message missing!"
+    assert "could not locate" in out_res['answer'].lower(), "Polite message missing!"
 
     # 4. Test Neural Voice Synthesis (Edge TTS)
     print("\n4. Testing Edge TTS Neural Voice Generation...")

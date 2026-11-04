@@ -52,7 +52,7 @@ export function VoiceSheet({
       </Text>
 
       <SectionTitle>Voices on this server</SectionTitle>
-      {loading ? <Text style={styles.muted}>Loading voices from the server…</Text> : null}
+      {loading ? <Text style={styles.muted}>Loading voices from the server</Text> : null}
       {!loading && voices.length === 0 ? (
         <Text style={styles.muted}>The server did not return any voices.</Text>
       ) : null}
@@ -86,7 +86,9 @@ export function VoiceSheet({
             <View style={{ flex: 1 }}>
               <Text style={styles.voiceName}>{voice.name}</Text>
               <Text style={styles.voiceMeta}>{meta}</Text>
-              {!usable && voice.reason ? <Text style={styles.voiceMeta}>{voice.reason}</Text> : null}
+              {!usable ? (
+              <Text style={styles.voiceMeta}>Not available on this server.</Text>
+            ) : null}
             </View>
             <View style={[styles.radio, { borderColor: active ? colors.accent : colors.border }]}>
               {active ? <View style={styles.radioDot} /> : null}
@@ -108,8 +110,10 @@ export function SettingsSheet({
   onRecheck,
   autoSpeak,
   muted,
+  telemetry,
   onToggleAutoSpeak,
   onToggleMute,
+  onToggleTelemetry,
   speech,
   onOpenVoices,
   voiceName,
@@ -126,8 +130,10 @@ export function SettingsSheet({
   onRecheck: () => void
   autoSpeak: boolean
   muted: boolean
+  telemetry: boolean
   onToggleAutoSpeak: (value: boolean) => void
   onToggleMute: (value: boolean) => void
+  onToggleTelemetry: (value: boolean) => void
   speech: SpeechAvailability
   onOpenVoices: () => void
   voiceName: string
@@ -189,8 +195,8 @@ export function SettingsSheet({
             {health.current_document} • {health.total_chunks} chunks indexed
           </Text>
         ) : null}
-        {health?.engine ? <Text style={styles.subtle}>Answer engine: {health.engine}</Text> : null}
-        {health?.chunking?.chunks ? (
+        {telemetry && health?.engine ? <Text style={styles.subtle}>Answer engine: {health.engine}</Text> : null}
+        {telemetry && health?.chunking?.chunks ? (
           <Text style={styles.subtle}>
             Chunking: median {health.chunking.words_p50} words, range {health.chunking.words_min}-
             {health.chunking.words_max}, {health.chunking.headings_tracked} headings carried,{' '}
@@ -212,6 +218,18 @@ export function SettingsSheet({
         <Switch value={muted} onValueChange={onToggleMute} trackColor={{ true: colors.accent }} />
       </View>
 
+      <SectionTitle>Developer</SectionTitle>
+      <View style={styles.switchRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.switchLabel}>Show engine and timings</Text>
+          <Text style={styles.subtle}>
+            Puts stage times, match strength and the model or voice behind each reply on screen. Meant for testing the
+            server, not for listening.
+          </Text>
+        </View>
+        <Switch value={telemetry} onValueChange={onToggleTelemetry} trackColor={{ true: colors.accent }} />
+      </View>
+
       <SectionTitle>Voice</SectionTitle>
       <Pressable onPress={onOpenVoices} style={styles.switchRow} accessibilityRole="button">
         <View style={{ flex: 1 }}>
@@ -231,7 +249,7 @@ export function SettingsSheet({
       )}
 
       <SectionTitle>Recognition diagnostics</SectionTitle>
-      {diagnostics.length === 0 ? <Text style={styles.subtle}>Reading device capabilities…</Text> : null}
+      {diagnostics.length === 0 ? <Text style={styles.subtle}>Reading device capabilities</Text> : null}
       {diagnostics.map((line) => (
         <Text key={line} style={styles.diagnostic}>
           {line}
@@ -240,8 +258,8 @@ export function SettingsSheet({
 
       <SectionTitle>Conversation</SectionTitle>
       <View style={styles.tagWrap}>
-        <Chip label="Answers stay on your own server" />
-        <Chip label="No third-party speech API" tone="ok" />
+        <Chip label="Answers cite your file" />
+        <Chip label="Anything else is labelled" tone="ok" />
       </View>
       <Btn
         label={confirmClear ? 'Tap again to erase history' : 'Clear conversation'}

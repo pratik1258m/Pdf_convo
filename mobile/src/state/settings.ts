@@ -9,6 +9,8 @@ export type Settings = {
   listen: ListenMode
   autoSpeak: boolean
   muted: boolean
+  /** Show stage timings, match score and engine names in every reply. Off by default. */
+  telemetry: boolean
   recentUrls: string[]
 }
 
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   listen: 'auto',
   autoSpeak: true,
   muted: false,
+  telemetry: false,
   recentUrls: [],
 }
 
@@ -36,6 +39,7 @@ function sanitize(stored: Settings): Settings {
     baseUrl: address.ok ? address.url : '',
     voiceId: typeof stored.voiceId === 'string' ? stored.voiceId : DEFAULT_SETTINGS.voiceId,
     listen: stored.listen === 'en-IN' || stored.listen === 'hi-IN' ? stored.listen : 'auto',
+    telemetry: stored.telemetry === true,
     recentUrls: Array.isArray(stored.recentUrls)
       ? stored.recentUrls.filter((url): url is string => typeof url === 'string').slice(0, 4)
       : [],

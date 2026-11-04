@@ -16,7 +16,7 @@ import { BackendError, askText, getDocument, getHealth, getVoices, speakSegments
 import { describeHostIssue } from '../api/normalize'
 import { useReplyPlayer } from '../audio/playback'
 import { useSpeechRecognition } from '../audio/speech'
-import { EMPTY_CONVERSATION, conversationReducer, makeId, persistableMessages } from '../state/conversation'
+import { EMPTY_CONVERSATION, askHistory, conversationReducer, makeId, persistableMessages } from '../state/conversation'
 import { readArray, writeJson } from '../state/storage'
 import { colors, font, radius, spacing } from '../theme'
 import { formatLatency, resolveMicLocale, plural, shortHost } from '../utils/format'
@@ -80,12 +80,22 @@ export function ChatScreen({
   const [hydrated, setHydrated] = useState(false)
 
   const askRef = useRef<(question: string) => void>(() => {})
+  // The transcript of the screen as of the last commit, read at ask time so the
+  // question being dispatched right now is not in the history that goes with it.
+  const messagesRef = useRef<ChatMessage[]>(conversation.messages)
+
+  useEffect(() => {
+    messagesRef.current = conversation.messages
+  }, [conversation.messages])
   const player = useReplyPlayer(baseUrl, settings.muted)
   // No voice picked yet means the server decides, so the phone gets whichever
   // speaker this machine can make fastest instead of a hard-coded network voice.
   const voiceId = settings.voiceId || health?.default_voice || 'en-IN-PrabhatNeural'
   const selectedVoice = voices.find((voice) => voice.id === voiceId)
   const locale = resolveMicLocale(settings.listen, selectedVoice, voiceId)
+  // The document the phone is actually talking about: the upload response first,
+  // because health can still be reporting the file that was loaded before this one.
+  const documentName = stats?.filename || (health && health.current_document !== 'None' ? health.current_document : '')
 
   const handleTranscript = useCallback((text: string, isFinal: boolean) => {
     if (isFinal) askRef.current(text)
@@ -119,9 +129,7 @@ export function ChatScreen({
     }
   }, [baseUrl])
 
-  useEffect(() => {
-    void checkHealth()
-    void getVoices(baseUrl).then(setVoices).catch(() => setVoices([]))
+  const refreshDocument = useCallback(() => {
     void getDocument(baseUrl)
       .then((doc) => {
         if (!doc.loaded || !doc.filename) {
@@ -138,7 +146,24 @@ export function ChatScreen({
         })
       })
       .catch(() => undefined)
-  }, [baseUrl, checkHealth])
+  }, [baseUrl])
+
+  useEffect(() => {
+    void checkHealth()
+    void getVoices(baseUrl).then(setVoices).catch(() => setVoices([]))
+    refreshDocument()
+  }, [baseUrl, checkHealth, refreshDocument])
+
+  // The card describes the file the server is holding, so when that changes underneath
+  // it - another phone uploaded a PDF, the server restarted - the chip follows on the
+  // next health poll instead of showing a count from a document that is gone.
+  useEffect(() => {
+    if (!health) return
+    const loaded = (health.current_document ?? '').trim()
+    if (!loaded && !stats) return
+    if (loaded === (stats?.filename ?? '') && health.total_chunks === stats?.total_chunks) return
+    refreshDocument()
+  }, [health, stats, refreshDocument])
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -183,7 +208,7 @@ export function ChatScreen({
         if (headNotice) setNotice(headNotice)
       } catch (error) {
         dispatch({ type: 'voice', id, patch: { audioUrls: null } })
-        setNotice(`The answer is on screen, but the server could not speak it: ${describeError(error)}`)
+        setNotice("The answer is on screen, but the server could not speak it.")
         return
       }
 
@@ -214,7 +239,7 @@ export function ChatScreen({
         if (tailNotice) setNotice(tailNotice)
       } catch (error) {
         dispatch({ type: 'voice', id, patch: { audioUrls: [...urls], timings: { ...textTimings, tts_ms: ttsMs } } })
-        setNotice(`The answer is on screen and its first clip plays, but the rest could not be spoken: ${describeError(error)}`)
+        setNotice("The answer is on screen and its first clip plays, but the rest could not be spoken.")
       }
     },
     [baseUrl, player, settings.autoSpeak, settings.muted, voiceId]
@@ -228,6 +253,10 @@ export function ChatScreen({
       setDraft('')
       setNotice(null)
       void Haptics.selectionAsync().catch(() => undefined)
+
+      // Built before the question lands in state, so the exchange in flight is never
+      // sent as history: the server reads the last real question out of this list.
+      const history = askHistory(messagesRef.current)
 
       // `reuseId` means a failed answer is being retried in place, so the
       // question must not be appended a second time.
@@ -248,7 +277,11 @@ export function ChatScreen({
       const controller = new AbortController()
 
       try {
-        const data = await askText(baseUrl, { query: question }, controller.signal)
+        const data = await askText(
+          baseUrl,
+          { query: question, history },
+          controller.signal
+        )
         const timings: Timings = data.timings ?? {}
         dispatch({
           type: 'answer',
@@ -270,7 +303,11 @@ export function ChatScreen({
         void checkHealth()
         await synthesize(placeholderId, data.spoken_segments ?? [], timings)
       } catch (error) {
-        dispatch({ type: 'fail', id: placeholderId, text: describeError(error) })
+        dispatch({
+          type: 'fail',
+          id: placeholderId,
+          text: 'The server could not answer that. Check the connection and ask again.',
+        })
         setHealthTone('danger')
       } finally {
         setBusy(false)
@@ -310,7 +347,7 @@ export function ChatScreen({
         message: {
           id: makeId('s'),
           role: 'system',
-          text: `Uploading ${asset.name} and indexing it…`,
+          text: `Uploading ${asset.name} and indexing it`,
           createdAt: Date.now(),
         },
       })
@@ -319,8 +356,10 @@ export function ChatScreen({
       setStats(stats)
       const profile = stats.chunking
       const indexedIn =
-        typeof stats.index_ms === 'number' ? ` in ${formatLatency(stats.index_ms) ?? `${stats.index_ms} ms`}` : ''
-      const shape = profile?.chunks
+        settings.telemetry && typeof stats.index_ms === 'number'
+          ? ` in ${formatLatency(stats.index_ms) ?? `${stats.index_ms} ms`}`
+          : ''
+      const shape = settings.telemetry && profile?.chunks
         ? `, passages of ${profile.words_avg ?? '?'} words (shortest ${profile.words_min ?? '?'}, longest ${
             profile.words_max ?? '?'
           }, ${profile.headings_tracked ?? 0} headings carried)`
@@ -348,13 +387,22 @@ export function ChatScreen({
           const welcomeNotice = partialSpeechNotice(spoken)
           if (welcomeNotice) setNotice(welcomeNotice)
         } catch (error) {
-          setNotice(`The document is indexed but the welcome message could not be spoken: ${describeError(error)}`)
+          setNotice("The document is indexed but the welcome message could not be spoken.")
         }
       }
       void checkHealth()
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
     } catch (error) {
-      dispatch({ type: 'system', message: { id: makeId('s'), role: 'system', text: describeError(error), createdAt: Date.now(), failed: true } })
+      dispatch({
+        type: 'system',
+        message: {
+          id: makeId('s'),
+          role: 'system',
+          text: 'That document could not be opened. Choose another PDF.',
+          createdAt: Date.now(),
+          failed: true,
+        },
+      })
     } finally {
       setUploading(false)
     }
@@ -407,7 +455,7 @@ export function ChatScreen({
         </View>
 
         <Pressable
-          onPress={pickDocument}
+          onPress={uploading ? undefined : pickDocument}
           accessibilityRole="button"
           accessibilityLabel="Upload a PDF document"
           style={({ pressed }) => [styles.docBar, { opacity: pressed ? 0.85 : 1 }]}
@@ -419,12 +467,12 @@ export function ChatScreen({
                   stats.total_chunks,
                   'chunk',
                   'chunks'
-                )}${stats.chunking?.words_p50 ? ` • ~${stats.chunking.words_p50} words per passage` : ''}`
+                )}${settings.telemetry && stats.chunking?.words_p50 ? ` • ~${stats.chunking.words_p50} words per passage` : ''}`
               : health && health.current_document !== 'None'
                 ? `${health.current_document} • ${plural(health.total_chunks, 'chunk', 'chunks')} indexed`
                 : 'No document loaded — tap to choose a PDF'}
           </Text>
-          <Text style={styles.docAction}>{uploading ? 'Indexing…' : 'Upload'}</Text>
+          <Text style={styles.docAction}>{uploading ? 'Indexing' : 'Upload'}</Text>
         </Pressable>
       </View>
 
@@ -437,6 +485,7 @@ export function ChatScreen({
             message={item}
             isPlaying={player.activeId === item.id && player.isPlaying}
             playingSegment={player.activeId === item.id ? player.segment + 1 : 0}
+            showTelemetry={settings.telemetry}
             onReplay={(message) => {
               if (player.activeId === message.id && player.isPlaying) player.stop()
               else player.playSegments(message.audioUrls, message.id)
@@ -446,12 +495,28 @@ export function ChatScreen({
         )}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>Voice answers from your own PDF</Text>
-            <Text style={styles.emptyBody}>
-              Upload a document, then hold the microphone and ask. The server finds the passage, replies and speaks
-              the answer back to you.
-            </Text>
-            <Btn label={uploading ? 'Indexing document' : 'Choose a PDF'} onPress={pickDocument} loading={uploading} />
+            {documentName ? (
+              <>
+                <Text style={styles.emptyTitle}>Ask about {documentName}</Text>
+                <Text style={styles.emptyBody}>
+                  Tap the microphone at the bottom and speak, or type below. The passage is found on the server and the
+                  answer comes back as speech.
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.emptyTitle}>Voice answers from your own PDF</Text>
+                <Text style={styles.emptyBody}>
+                  Upload a document, then tap the microphone and ask. The server finds the passage, replies and speaks
+                  the answer back to you.
+                </Text>
+                <Btn
+                  label={uploading ? 'Indexing document' : 'Choose a PDF'}
+                  onPress={pickDocument}
+                  loading={uploading}
+                />
+              </>
+            )}
             <View style={styles.starterWrap}>
               {STARTERS.map((prompt) => (
                 <Chip key={prompt} label={prompt} onPress={() => ask(prompt)} />
@@ -522,8 +587,10 @@ export function ChatScreen({
         onRecheck={checkHealth}
         autoSpeak={settings.autoSpeak}
         muted={settings.muted}
+        telemetry={settings.telemetry}
         onToggleAutoSpeak={(value) => update({ autoSpeak: value })}
         onToggleMute={(value) => update({ muted: value })}
+        onToggleTelemetry={(value) => update({ telemetry: value })}
         speech={speech.availability}
         onOpenVoices={() => {
           setShowSettings(false)

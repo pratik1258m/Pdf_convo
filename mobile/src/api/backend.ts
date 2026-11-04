@@ -1,4 +1,5 @@
 import type {
+  AskTextRequest,
   AskTextResponse,
   DocumentSnapshot,
   HealthSnapshot,
@@ -72,7 +73,12 @@ async function request<T>(baseUrl: string, path: string, init: FetchInit = {}): 
   return payload as T
 }
 
-function httpDetail(payload: unknown, response: Response): string {
+function httpDetail(payload: unknown, response: { status: number; statusText: string }): string {
+  const detail = detailFromPayload(payload)
+  return detail ?? `${response.status} ${response.statusText}`
+}
+
+function detailFromPayload(payload: unknown): string | null {
   if (payload && typeof payload === 'object' && 'detail' in payload) {
     const detail = (payload as { detail: unknown }).detail
     if (typeof detail === 'string') return detail
@@ -83,7 +89,7 @@ function httpDetail(payload: unknown, response: Response): string {
       }
     }
   }
-  return `${response.status} ${response.statusText}`
+  return null
 }
 
 function errorMessage(error: unknown): string {
@@ -109,57 +115,145 @@ export function getDocument(baseUrl: string): Promise<DocumentSnapshot> {
 /** Text first: retrieval and answer synthesis only, so speech never blocks the screen. */
 export function askText(
   baseUrl: string,
-  input: { query: string; voice?: string },
+  input: AskTextRequest,
   signal?: AbortSignal
 ): Promise<AskTextResponse> {
+  // An exchange-less body leaves `history` out rather than sending an empty list:
+  // absent means "nothing to expand or re-ask", which a list of nothing does not say.
+  const { history, ...rest } = input
+  const body: AskTextRequest = history && history.length ? { ...rest, history } : rest
+
   return request<AskTextResponse>(
     baseUrl,
     '/api/ask_text',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-      timeoutMs: 20000,
+      body: JSON.stringify(body),
+      timeoutMs: 30000,
       signal,
     }
   )
 }
 
 /** Speech is a separate, cache-first call so the answer is already on screen. */
-export function speakSegments(
+const SPEAK_BATCH = 12
+
+export async function speakSegments(
   baseUrl: string,
   texts: string[],
   voice: string,
   signal?: AbortSignal
 ): Promise<SpeakResponse> {
-  return request<SpeakResponse>(
-    baseUrl,
-    '/api/speak',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ texts, voice }),
-      timeoutMs: 60000,
-      signal,
+  // A local speech engine makes one clip at a time, so twenty segments in a single
+  // request would hold the whole queue behind them and run past the client's clock.
+  // Batches go out one after another, and a batch that fails after the first has
+  // landed still hands back the audio that exists - a shorter reply, not a lost one.
+  const batches: string[][] = []
+  for (let index = 0; index < texts.length; index += SPEAK_BATCH) batches.push(texts.slice(index, index + SPEAK_BATCH))
+  if (!batches.length) batches.push([])
+
+  const parts: SpeakResponse[] = []
+  for (const batch of batches) {
+    try {
+      parts.push(await request<SpeakResponse>(baseUrl, '/api/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texts: batch, voice }),
+        timeoutMs: 60000,
+        signal,
+      }))
+    } catch (error) {
+      if (signal?.aborted || !parts.length) throw error
+      break
     }
-  )
+  }
+
+  if (parts.length === 1) return parts[0]
+  const segments = parts.flatMap((part) => part.segments)
+  return {
+    ...parts[0],
+    status: parts.some((part) => part.status !== 'success') || segments.length < texts.length ? 'partial' : parts[0].status,
+    segments,
+    requested: parts.reduce((total, part) => total + (part.requested ?? 0), 0),
+    errors: parts.flatMap((part) => part.errors ?? []),
+    timings: {
+      tts_ms: parts.reduce((total, part) => total + (part.timings?.tts_ms ?? 0), 0),
+      segments: segments.length,
+      cached: parts.reduce((total, part) => total + (part.timings?.cached ?? 0), 0),
+    },
+  }
 }
 
 type SelectedFile = { uri: string; name: string; mimeType?: string | null }
 
+/**
+ * The document goes up over XMLHttpRequest, not fetch.
+ *
+ * React Native's `FormData` is an XHR polyfill: a `{uri, name, type}` part is only
+ * serialised when XHR builds the request body, and `fetch` throws
+ * "Unsupported FormDataPart implementation" on that same object - which is exactly how
+ * the first on-device upload died. The picker copies the file into the app's own cache
+ * directory, so the URI it hands back is a path the native uploader can open.
+ */
 export function uploadPdf(baseUrl: string, file: SelectedFile, signal?: AbortSignal): Promise<UploadResponse> {
   const form = new FormData()
-  // React Native's FormData serialises a {uri, name, type} object as a file part;
-  // the Content-Type header must stay unset so the runtime can add the multipart boundary.
   form.append('file', {
     uri: file.uri,
     name: file.name,
     type: file.mimeType || 'application/pdf',
-  } as unknown as Blob)
+  } as unknown as string)
 
-  return request<UploadResponse>(
-    baseUrl,
-    '/api/upload_pdf',
-    { method: 'POST', body: form, timeoutMs: 120000, signal }
-  )
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${baseUrl}/api/upload_pdf`)
+    xhr.timeout = 120000
+    xhr.responseType = 'text'
+
+    const onAbort = () => xhr.abort()
+    if (signal) signal.addEventListener('abort', onAbort)
+    const settle = () => {
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
+
+    xhr.onload = () => {
+      settle()
+      let payload: unknown = null
+      if (xhr.responseText) {
+        try {
+          payload = JSON.parse(xhr.responseText)
+        } catch {
+          payload = null
+        }
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (payload === null) {
+          reject(new BackendError('parse', 'The server sent an empty response.', xhr.status))
+        } else {
+          resolve(payload as UploadResponse)
+        }
+        return
+      }
+      reject(
+        new BackendError(
+          'http',
+          detailFromPayload(payload) ?? `${xhr.status} ${xhr.statusText}`,
+          xhr.status
+        )
+      )
+    }
+    xhr.onerror = () => {
+      settle()
+      reject(new BackendError('network', 'Could not send the document. Check that the server is running.'))
+    }
+    xhr.ontimeout = () => {
+      settle()
+      reject(new BackendError('timeout', 'The server did not finish indexing the document within 2 minutes.'))
+    }
+    xhr.onabort = () => {
+      settle()
+      reject(new BackendError('timeout', 'The upload was cancelled.'))
+    }
+    xhr.send(form)
+  })
 }

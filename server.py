@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -68,6 +69,7 @@ async def warm_local_speech() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _restore_recent_document()
     task = asyncio.create_task(warm_local_speech())
     try:
         yield
@@ -86,6 +88,9 @@ app.add_middleware(
 )
 
 UPLOAD_DIR = "/tmp/realtime_convo_uploads"
+# The document on disk that the live index was built from, so re-uploads never
+# delete the file a question is still being answered from.
+current_upload: Dict[str, str] = {}
 AUDIO_DIR = "/tmp/realtime_convo_audio"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -117,6 +122,48 @@ def _discard(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+def _forget_old_documents(keep: int = 6) -> None:
+    """Drop the uploaded PDFs the server no longer has indexed.
+
+    Every document is written to disk before it is parsed, and a demo that tries
+    four files would otherwise keep all four - 80 MB at a time - on the same disk
+    that holds the speech cache. Only files still being read are kept.
+    """
+    try:
+        entries = sorted(
+            (os.path.join(UPLOAD_DIR, name) for name in os.listdir(UPLOAD_DIR) if name.endswith(".pdf")),
+            key=lambda path: os.path.getmtime(path),
+            reverse=True,
+        )
+    except OSError:
+        return
+    for path in entries[keep:]:
+        if path != current_upload.get("path"):
+            _discard(path)
+
+
+def _restore_recent_document() -> None:
+    """Reload the most recently uploaded document on startup if available."""
+    try:
+        entries = sorted(
+            (os.path.join(UPLOAD_DIR, name) for name in os.listdir(UPLOAD_DIR) if name.endswith(".pdf")),
+            key=lambda path: os.path.getmtime(path),
+            reverse=True,
+        )
+        if entries:
+            recent_path = entries[0]
+            display_name = re.sub(r"^[0-9a-f]{12}-", "", os.path.basename(recent_path))
+            fresh = PDFRAGEngine()
+            stats = fresh.load_pdf(recent_path)
+            fresh.current_filename = display_name
+            stats["filename"] = display_name
+            agent.rag = fresh
+            current_upload["path"] = recent_path
+            logger.info("Restored recent document: %s (%d pages, %d chunks)", display_name, stats["total_pages"], stats["total_chunks"])
+    except Exception as error:
+        logger.warning("Could not auto-restore recent document: %s", error)
 
 
 @app.exception_handler(Exception)
@@ -153,6 +200,9 @@ def speech_text_of(answer: str) -> str:
     """Spoken copy: page markers and markdown read out loud are noise."""
     cleaned = PAGE_CITATION_RE.sub(" ", answer)
     cleaned = _MARKDOWN_RE.sub(" ", cleaned)
+    # A table row is cells, not a sentence; pipes read aloud become a stutter, so the
+    # spoken copy uses the comma a listener hears as a list.
+    cleaned = cleaned.replace(" | ", ", ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
 
@@ -203,6 +253,18 @@ def answered(request: QueryRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     history = [{"query": turn.query, "answer": turn.answer or ""} for turn in (request.history or [])][-4:]
     result = agent.process_query(user_query, history=history)
+    # One line per question: without the gate's own number in the log, a reply the
+    # phone calls a refusal cannot be told apart from an answer the engine threw away.
+    # `outside` is the third case - the file could not answer, so the model did, and
+    # the answer carries no page because it cites nothing in the index.
+    logger.info(
+        "ask %r -> %s score=%.2f engine=%s pages=%s",
+        user_query[:120],
+        "outside" if result["is_out_of_context"] else "answered",
+        result["retrieval_score"],
+        result["engine"],
+        result["sources"],
+    )
     spoken_text = speech_text_of(result["answer"])
     return {
         "status": "success",
@@ -279,7 +341,10 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
     started = time.perf_counter()
-    save_path = os.path.join(UPLOAD_DIR, safe_name)
+    # The client-supplied name is display only. Two uploads of the same file, or a
+    # second document sent while the first is still being parsed, would otherwise
+    # overwrite the bytes that thread is reading and publish half an index.
+    save_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex[:12]}-{safe_name}")
     try:
         await _read_upload(file, save_path)
         with open(save_path, "rb") as handle:
@@ -297,7 +362,15 @@ async def upload_pdf(file: UploadFile = File(...)):
                 status_code=422,
                 detail=f"{safe_name} holds no selectable text. A scanned PDF has to be OCR'd before it can be asked about.",
             )
+        previous = current_upload.get("path")
         agent.rag = fresh
+        current_upload["path"] = save_path
+        # The uuid only ever names the file; every reader sees the name it was sent as.
+        fresh.current_filename = safe_name
+        stats["filename"] = safe_name
+        if previous and previous != save_path:
+            _discard(previous)
+        _forget_old_documents()
     except HTTPException:
         _discard(save_path)
         raise
@@ -370,7 +443,10 @@ async def speak(request: SpeakRequest):
 async def ask_voice(request: QueryRequest):
     """One-call path used by the browser demo: answer plus speech."""
     started = time.perf_counter()
-    payload = answered(request)
+    # The answer path does index work and a blocking model call, so it runs off the
+    # loop: while this question is being answered the phone must still be able to
+    # fetch the audio of the answer already playing.
+    payload = await asyncio.to_thread(answered, request)
     segments = payload["spoken_segments"] or [payload["spoken_text"] or "I am listening."]
 
     tts_started = time.perf_counter()
@@ -405,6 +481,7 @@ def get_audio(filename: str):
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/client_demo.html", response_class=HTMLResponse)
 def index_page():
     html_file = os.path.join(os.path.dirname(__file__), "client_demo.html")
     if os.path.exists(html_file):

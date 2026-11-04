@@ -30,6 +30,7 @@ env/
 venv/
 .venv/
 .pytest_cache/
+*.log
 
 # Mobile & Desktop Native Artifacts
 .gradle/

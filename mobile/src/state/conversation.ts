@@ -1,4 +1,4 @@
-import type { AssistantStage, ChatMessage } from '../types'
+import type { AssistantStage, AskHistoryTurn, ChatMessage } from '../types'
 
 export type ConversationState = { messages: ChatMessage[]; pendingId: string | null }
 
@@ -17,6 +17,10 @@ export type ConversationAction =
 export const EMPTY_CONVERSATION: ConversationState = { messages: [], pendingId: null }
 
 const PERSIST_LIMIT = 40
+
+/** How many exchanges travel with a question. The server keeps the last four turns
+ *  of whatever arrives, so anything older is body weight on a 20 s request. */
+const ASK_HISTORY_LIMIT = 4
 
 export function conversationReducer(
   state: ConversationState,
@@ -104,6 +108,45 @@ export function conversationReducer(
     default:
       return state
   }
+}
+
+/**
+ * Completed exchanges for `/api/ask_text`, oldest last.
+ *
+ * Two server behaviours are dead without this: a tokenless follow-up such as
+ * "and page 3?" is expanded with the previous question, and a pushback like
+ * "no this is not a correct answer" re-asks that previous question instead of
+ * being treated as a new one. Both read `query`, so a turn only counts when the
+ * question and its answer are both on screen.
+ *
+ * Anything the server could misread as a question is left out: system notices,
+ * failed turns, answers still being streamed, and blank strings. The question
+ * being asked now is never in here, since it has no answer yet.
+ */
+export function askHistory(messages: ChatMessage[], limit = ASK_HISTORY_LIMIT): AskHistoryTurn[] {
+  const keep = Math.max(1, limit)
+  const turns: AskHistoryTurn[] = []
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const question = messages[index]
+    if (question.role !== 'user') continue
+    const query = question.text.trim()
+    if (!query) continue
+
+    for (let next = index + 1; next < messages.length; next += 1) {
+      const candidate = messages[next]
+      if (candidate.role === 'user') break
+      if (candidate.role !== 'assistant') continue
+      if (candidate.failed || candidate.stage === 'working') continue
+      const answer = candidate.text.trim()
+      if (!answer) continue
+      turns.push({ query, answer })
+      index = next
+      break
+    }
+  }
+
+  return turns.slice(-keep)
 }
 
 export function persistableMessages(messages: ChatMessage[]): ChatMessage[] {

@@ -18,7 +18,14 @@ export function normalizeBaseUrl(raw: string): NormalizedUrl {
 
   const scheme = match[1].toLowerCase()
   const host = match[2].toLowerCase()
-  if (!host.includes(':')) return { ok: false, reason: 'Add the port, for example :8080' }
+  if (!host.includes(':')) {
+    // An https address is a tunnel or a hosted server, and those sit on the default
+    // port, so demanding a number there rejects an address that is perfectly right.
+    // A bare `http` host is the LAN case, where the server is always on 8080, and
+    // connecting to port 80 silently would be worse than naming the missing port.
+    if (scheme === 'https') return { ok: true, url: `https://${host}`, host }
+    return { ok: false, reason: 'Add the port, for example :8080' }
+  }
   const port = Number(host.slice(host.indexOf(':') + 1))
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     return { ok: false, reason: `"${host.split(':')[1]}" is not a valid port number` }
@@ -33,10 +40,13 @@ export function resolveAudioUrl(baseUrl: string, path?: string | null): string |
   return `${baseUrl}${path.startsWith('/') ? '' : '/'}${path}`
 }
 
+export const USB_REVERSE_URL = 'http://127.0.0.1:8080'
+
+/** Only advisory: 127.0.0.1 does reach the Mac once the port is forwarded over the cable. */
 export function describeHostIssue(baseUrl: string): string | null {
   const host = baseUrl.replace(/^https?:\/\//i, '').split(':')[0]
   if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
-    return 'localhost points at the phone, not your Mac. Use the computer\'s LAN address, e.g. http://10.151.207.43:8080. On an Android emulator use http://10.0.2.2:8080.'
+    return 'On the phone, this address is the phone itself. It reaches your computer only while the USB cable is connected and the port is forwarded with adb reverse tcp:8080 tcp:8080. On Wi-Fi, use the computer\'s LAN address, e.g. http://10.151.207.43:8080. On an Android emulator use http://10.0.2.2:8080.'
   }
   return null
 }

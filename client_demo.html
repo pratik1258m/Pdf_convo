@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Voice-to-Voice PDF Conversation Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+    rel="stylesheet">
   <style>
     :root {
       --bg: #0b0f19;
@@ -19,58 +22,281 @@
       --text: #f3f4f6;
       --text-muted: #9ca3af;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-    body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 24px 16px; }
-    .container { width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 20px; }
-    
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
     /* Header */
-    .header { text-align: center; margin-bottom: 8px; }
-    .header h1 { font-size: 26px; font-weight: 800; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
-    
+    .header {
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    .header h1 {
+      font-size: 26px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .header p {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
     /* Cards */
-    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
-    
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+
     /* Upload Section */
-    .upload-area { border: 2px dashed #374151; border-radius: 8px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; }
-    .upload-area:hover, .upload-area.dragover { border-color: var(--primary); background: rgba(59, 130, 246, 0.05); }
-    .doc-pill { display: inline-flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); border: 1px solid var(--accent); color: #34d399; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 10px; }
+    .upload-area {
+      border: 2px dashed #374151;
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .upload-area:hover,
+    .upload-area.dragover {
+      border-color: var(--primary);
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    .doc-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid var(--accent);
+      color: #34d399;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 10px;
+    }
 
     /* Controls Bar */
-    .controls { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
-    select { background: #1f2937; border: 1px solid #374151; color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none; cursor: pointer; }
-    
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    select {
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+    }
+
     /* Conversation Window */
-    .convo-box { height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 12px; border: 1px solid #1f2937; border-radius: 8px; background: #0c121e; }
-    .msg { display: flex; flex-direction: column; max-width: 82%; animation: fadeIn 0.25s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-    .msg.user { align-self: flex-end; }
-    .msg.user .bubble { background: #2563eb; color: #fff; border-radius: 14px 14px 2px 14px; }
-    .msg.ai { align-self: flex-start; }
-    .msg.ai .bubble { background: #1f2937; color: var(--text); border-radius: 14px 14px 14px 2px; border: 1px solid #374151; }
-    .bubble { padding: 12px 16px; font-size: 14px; line-height: 1.5; }
-    .meta-tag { font-size: 11px; margin-top: 4px; display: flex; gap: 8px; align-items: center; }
-    .badge-grounded { color: #34d399; font-weight: 600; }
-    .badge-out { color: var(--warning); font-weight: 600; }
+    .convo-box {
+      height: 380px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 12px;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      background: #0c121e;
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      max-width: 82%;
+      animation: fadeIn 0.25s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .msg.user {
+      align-self: flex-end;
+    }
+
+    .msg.user .bubble {
+      background: #2563eb;
+      color: #fff;
+      border-radius: 14px 14px 2px 14px;
+    }
+
+    .msg.ai {
+      align-self: flex-start;
+    }
+
+    .msg.ai .bubble {
+      background: #1f2937;
+      color: var(--text);
+      border-radius: 14px 14px 14px 2px;
+      border: 1px solid #374151;
+    }
+
+    .bubble {
+      padding: 12px 16px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .meta-tag {
+      font-size: 11px;
+      margin-top: 4px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .badge-grounded {
+      color: #34d399;
+      font-weight: 600;
+    }
+
+    .badge-out {
+      color: var(--warning);
+      font-weight: 600;
+    }
 
     /* Mic & Interaction Area */
-    .voice-control { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 16px; }
-    .mic-btn { width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #2563eb, #3b82f6); border: none; color: #fff; font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px var(--primary-glow); transition: all 0.2s; outline: none; }
-    .mic-btn:hover { transform: scale(1.05); }
-    .mic-btn.listening { background: linear-gradient(135deg, #ef4444, #dc2626); box-shadow: 0 0 30px rgba(239, 68, 68, 0.7); animation: pulse 1.2s infinite; }
-    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
-    
-    .text-input-bar { display: flex; width: 100%; gap: 8px; }
-    .text-input-bar input { flex: 1; background: #1f2937; border: 1px solid #374151; color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; outline: none; }
-    .text-input-bar input:focus { border-color: var(--primary); }
-    .send-btn { background: var(--primary); color: #fff; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; }
-    
-    .status-text { font-size: 13px; color: var(--text-muted); min-height: 18px; }
+    .voice-control {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .mic-btn {
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #2563eb, #3b82f6);
+      border: none;
+      color: #fff;
+      font-size: 26px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 20px var(--primary-glow);
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    .mic-btn:hover {
+      transform: scale(1.05);
+    }
+
+    .mic-btn.listening {
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      box-shadow: 0 0 30px rgba(239, 68, 68, 0.7);
+      animation: pulse 1.2s infinite;
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+      }
+
+      50% {
+        transform: scale(1.1);
+      }
+
+      100% {
+        transform: scale(1);
+      }
+    }
+
+    .text-input-bar {
+      display: flex;
+      width: 100%;
+      gap: 8px;
+    }
+
+    .text-input-bar input {
+      flex: 1;
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .text-input-bar input:focus {
+      border-color: var(--primary);
+    }
+
+    .send-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .status-text {
+      font-size: 13px;
+      color: var(--text-muted);
+      min-height: 18px;
+    }
   </style>
 </head>
+
 <body>
   <div class="container">
-    
+
     <div class="header">
       <h1>Voice-to-Voice Document Assistant</h1>
       <p>Real-Time Q&amp;A &bull; Grounded Document Context &bull; Polite Out-of-Scope Fallback</p>
@@ -79,7 +305,8 @@
     <!-- Upload Card -->
     <div class="card">
       <div class="upload-area" id="dropArea" onclick="document.getElementById('pdfInput').click()">
-        <input type="file" id="pdfInput" accept="application/pdf" style="display:none;" onchange="handleFileUpload(event)">
+        <input type="file" id="pdfInput" accept="application/pdf" style="display:none;"
+          onchange="handleFileUpload(event)">
         <p style="font-size:15px; font-weight:600; margin-bottom:4px;">📄 Click or Drag &amp; Drop PDF Document</p>
         <p style="font-size:12px; color:var(--text-muted);">Supports any report, technical spec, or syllabus PDF</p>
         <div id="docPill" style="display:none;"></div>
@@ -124,7 +351,8 @@
         <div class="status-text" id="statusText">Tap mic to speak (or type below)</div>
 
         <div class="text-input-bar">
-          <input type="text" id="textInput" placeholder="Ask anything about the PDF (or any general question)..." onkeydown="if(event.key==='Enter') sendTextQuery()">
+          <input type="text" id="textInput" placeholder="Ask anything about the PDF (or any general question)..."
+            onkeydown="if(event.key==='Enter') sendTextQuery()">
           <button class="send-btn" onclick="sendTextQuery()">Send</button>
         </div>
       </div>
@@ -383,4 +611,5 @@
     populateVoices();
   </script>
 </body>
+
 </html>

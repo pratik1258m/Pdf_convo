@@ -12,7 +12,7 @@ import {
 import Constants from 'expo-constants'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackendError, getHealth } from '../api/backend'
-import { describeHostIssue, normalizeBaseUrl, suggestFromDevServerHost } from '../api/normalize'
+import { USB_REVERSE_URL, describeHostIssue, normalizeBaseUrl, suggestFromDevServerHost } from '../api/normalize'
 import type { HealthSnapshot } from '../types'
 import type { Settings } from '../state/settings'
 import { colors, font, radius, spacing } from '../theme'
@@ -110,6 +110,13 @@ export function ConnectScreen({
           </View>
         ) : null}
 
+        {!suggestion && USB_REVERSE_URL !== input ? (
+          <View style={styles.suggestionRow}>
+            <Text style={styles.suggestionText}>USB cable with port forwarding</Text>
+            <Chip label={USB_REVERSE_URL.replace(/^https?:\/\//i, '')} onPress={() => setInput(USB_REVERSE_URL)} />
+          </View>
+        ) : null}
+
         {settings.recentUrls.length > 0 ? (
           <View style={styles.recentRow}>
             {settings.recentUrls.map((url) => (
@@ -145,9 +152,9 @@ export function ConnectScreen({
         <Facts
           lines={[
             '1. Start the server: python3 server.py',
-            '2. On the Mac, print its LAN address: ipconfig getifaddr en0',
-            '3. Use http://<that address>:8080 in this field',
-            '4. Keep the phone and the computer on the same Wi-Fi network',
+            '2. On the same Wi-Fi: run ipconfig getifaddr en0 on the Mac, then enter http://<that address>:8080',
+            '3. From anywhere: run ngrok http 8080 and enter the https:// address it prints',
+            '4. Over the USB cable: run adb reverse tcp:8080 tcp:8080, then use the 127.0.0.1 chip above',
           ]}
         />
       </ScrollView>

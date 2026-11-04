@@ -56,10 +56,10 @@ The server picks for you and tells you what it picked: `GET /api/health` returns
 
 Guardrails that hold across engines:
 
-- **one engine per answer.** The voice is chosen per request, so an answer is never half local and half network; the clip URLs, the `speech_engine` field and the `engine` label all name the engine that ran.
+- **one engine per answer.** The voice is chosen per request, so an answer is never half local and half network; the `speech_engine` field names the engine that ran, and each clip URL's extension carries that engine's format.
 - **the cache key is the engine too.** Text, voice id and rate select the file, and the file's extension carries the format, so a Supertonic WAV can never be served where an Edge MP3 was asked for.
 - **local work is serialised, deliberately.** One ONNX sentence already uses every core; queueing a second in parallel only delays the first clip the phone is waiting for. `edge` keeps its parallel path because it is waiting on a socket, not on CPU.
-- **the rate means the same thing everywhere.** The client's `+8%` is a multiplier; it inverts into Piper's `length_scale` (a duration) and passes straight through into Supertonic's `speed`.
+- **the rate means the same thing everywhere.** The server's default `+8%` (`DEFAULT_RATE`) is a multiplier; the phone sends no rate and inherits it. It inverts into Piper's `length_scale` (a duration) and passes straight through into Supertonic's `speed`.
 - **a 20 s ceiling on any one sentence** (`LOCAL_TIMEOUT_S`), with the timeout reported honestly instead of a silent partial success. A worker thread cannot be killed, so the shielded thread is left to finish into its own `.part` file and a reaper deletes abandoned `.part` files older than the young-file guard.
 - **warming means the model is in memory.** Startup loads each engine through `warm_voice`, not by speaking a sentence, because a warm-up line is a disk-cache hit on the second run and would leave the session missing while the log claimed the engines were ready.
 

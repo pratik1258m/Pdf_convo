@@ -91,9 +91,10 @@ describe('reply voice sheet', () => {
     expect(getByText(/over the network/)).toBeTruthy()
   })
 
-  it('shows the reason a voice cannot be used instead of hiding it', async () => {
-    const { getByText } = await renderSheet()
-    expect(getByText(/hi_IN-pratham-medium\.onnx is missing/)).toBeTruthy()
+  it('says a voice cannot be used, without printing the server internals', async () => {
+    const { getByText, queryByText } = await renderSheet()
+    expect(getByText(/Not available on this server\./)).toBeTruthy()
+    expect(queryByText(/hi_IN-pratham-medium\.onnx is missing/)).toBeNull()
   })
 
   it('lets the microphone language be set apart from the reply voice', async () => {

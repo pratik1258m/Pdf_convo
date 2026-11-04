@@ -4,41 +4,54 @@ import type { ChatMessage } from '../src/types'
 
 const base: ChatMessage = { id: 'a1', role: 'assistant', text: 'The file is students.xlsx', createdAt: 1 }
 
-async function renderBubble(patch: Partial<ChatMessage>) {
+async function renderBubble(patch: Partial<ChatMessage>, showTelemetry = false) {
   return render(
     <MessageBubble
       message={{ ...base, ...patch }}
       isPlaying={false}
       playingSegment={0}
+      showTelemetry={showTelemetry}
       onReplay={() => undefined}
       onRetry={() => undefined}
     />
   )
 }
 
+const measured = {
+  sources: [8],
+  score: 0.77,
+  engine: 'extractive bm25 (no model configured)',
+  latencyMs: 145,
+  timings: { retrieval_ms: 0.3, answer_ms: 0.4, tts_ms: 900 },
+  audioUrls: ['/audio/a.mp3', '/audio/b.mp3'],
+}
+
 describe('answer bubble', () => {
-  it('shows the answer, its provenance and the measured stages', async () => {
-    await renderBubble({
-      sources: [8],
-      score: 0.77,
-      engine: 'extractive bm25 (no model configured)',
-      latencyMs: 145,
-      timings: { retrieval_ms: 0.3, answer_ms: 0.4, tts_ms: 900 },
-      audioUrls: ['/audio/a.mp3', '/audio/b.mp3'],
-    })
+  it('shows only the answer and its pages, with the developer switch off', async () => {
+    await renderBubble(measured)
 
     expect(screen.getByText('The file is students.xlsx')).toBeTruthy()
     expect(screen.getByText('Page 8')).toBeTruthy()
+    expect(screen.getByText('Replay • 2 clips')).toBeTruthy()
+    expect(screen.queryByText(/extractive bm25/)).toBeNull()
+    expect(screen.queryByText(/match 0.77/)).toBeNull()
+    expect(screen.queryByText(/on screen 145 ms/)).toBeNull()
+    expect(screen.queryByText(/retrieval 0.3 ms/)).toBeNull()
+    expect(screen.queryByText(/speech 900 ms/)).toBeNull()
+  })
+
+  it('shows the measured stages once the developer switch is on', async () => {
+    await renderBubble(measured, true)
+
     expect(screen.getByText(/match 0.77/)).toBeTruthy()
     expect(screen.getByText(/extractive bm25/)).toBeTruthy()
     expect(screen.getByText(/on screen 145 ms/)).toBeTruthy()
     expect(screen.getByText(/retrieval 0.3 ms/)).toBeTruthy()
     expect(screen.getByText(/speech 900 ms/)).toBeTruthy()
-    expect(screen.getByText('Replay • 2 clips')).toBeTruthy()
   })
 
   it('hides timings the server never measured', async () => {
-    await renderBubble({ text: 'Wait for alert presence.', sources: [3] })
+    await renderBubble({ text: 'Wait for alert presence.', sources: [3] }, true)
     expect(screen.queryByText(/retrieval/)).toBeNull()
     expect(screen.queryByText(/speech/)).toBeNull()
     expect(screen.getByText('Page 3')).toBeTruthy()
@@ -62,11 +75,11 @@ describe('answer bubble', () => {
 
   it('keeps saying voice is pending while clips are still arriving', async () => {
     const { unmount } = await renderBubble({ stage: 'voice', audioUrls: null })
-    expect(screen.getByText(/synthesizing the voice reply/)).toBeTruthy()
+    expect(screen.getByText(/voice reply is being made/)).toBeTruthy()
 
     await act(async () => unmount())
     await renderBubble({ stage: 'voice', audioUrls: ['/audio/a.mp3'] })
-    expect(screen.getByText(/1 clip ready and more still synthesizing/)).toBeTruthy()
+    expect(screen.getByText(/1 clip ready and more still being made/)).toBeTruthy()
   })
 
   it('offers a retry for a failed turn', async () => {

@@ -84,68 +84,82 @@ def section_uploads(client) -> None:
     print("\nA. Uploads that must be refused, and must not destroy a working index")
     print("-" * 78)
 
-    r = client.post("/api/upload_pdf", files={"file": ("notes.pdf", b"just text, not a pdf", "application/pdf")})
-    check(r.status_code == 415, f"non-PDF bytes named .pdf are refused (got {r.status_code})", http_detail(r))
-
-    r = client.post("/api/upload_pdf", files={"file": ("empty.pdf", b"", "application/pdf")})
-    check(r.status_code == 400, f"empty upload is refused (got {r.status_code})", http_detail(r))
-
-    r = client.post("/api/upload_pdf", files={"file": ("report.txt", b"hello", "text/plain")})
-    check(r.status_code == 400, f"non-PDF filename is refused (got {r.status_code})", http_detail(r))
-
+    import tempfile
     import server
 
-    original_cap = server.MAX_UPLOAD_BYTES
-    server.MAX_UPLOAD_BYTES = 4096
-    big = b"%PDF-1.4\n" + b"x" * 200000
-    r = client.post("/api/upload_pdf", files={"file": ("big.pdf", big, "application/pdf")})
-    server.MAX_UPLOAD_BYTES = original_cap
-    check(r.status_code == 413, f"upload over the size cap is refused (got {r.status_code})", http_detail(r))
+    # Isolate test uploads from live user documents in UPLOAD_DIR
+    original_upload_dir = server.UPLOAD_DIR
+    original_rag = server.agent.rag
+    original_upload = dict(server.current_upload)
+    test_temp_dir = tempfile.TemporaryDirectory()
+    server.UPLOAD_DIR = test_temp_dir.name
 
-    r = client.post("/api/upload_pdf", files={"file": ("broken.pdf", b"%PDF-1.4\nnot a real body\n", "application/pdf")})
-    check(r.status_code in (415, 422), f"unreadable PDF is refused with a reason (got {r.status_code})", http_detail(r))
+    try:
+        r = client.post("/api/upload_pdf", files={"file": ("notes.pdf", b"just text, not a pdf", "application/pdf")})
+        check(r.status_code == 415, f"non-PDF bytes named .pdf are refused (got {r.status_code})", http_detail(r))
 
-    # A text-less PDF is a scanned page, and an empty index is useless: say so now.
-    r = client.post("/api/upload_pdf", files={"file": ("scan.pdf", make_pdf([]), "application/pdf")})
-    check(r.status_code == 422, f"PDF with no extractable text is refused (got {r.status_code})", http_detail(r))
+        r = client.post("/api/upload_pdf", files={"file": ("empty.pdf", b"", "application/pdf")})
+        check(r.status_code == 400, f"empty upload is refused (got {r.status_code})", http_detail(r))
 
-    # A good upload, then two bad ones: the live index must still answer.
-    r = client.post("/api/upload_pdf", files={"file": ("lab.pdf", make_pdf(DOC_LINES), "application/pdf")})
-    ok_upload = r.status_code == 200 and r.json()["stats"]["total_chunks"] > 0
-    detail = http_detail(r)
-    if ok_upload:
-        stats = r.json()["stats"]
-        detail = (f"{stats['total_chunks']} chunks in {stats['index_ms']}ms, "
-                  f"{stats['chunking']['text_preserved_pct']}% of the words indexed")
-    check(ok_upload, "synthetic PDF indexes with chunks to search", detail)
+        r = client.post("/api/upload_pdf", files={"file": ("report.txt", b"hello", "text/plain")})
+        check(r.status_code == 400, f"non-PDF filename is refused (got {r.status_code})", http_detail(r))
 
-    client.post("/api/upload_pdf", files={"file": ("scan.pdf", make_pdf([]), "application/pdf")})
-    client.post("/api/upload_pdf", files={"file": ("broken.pdf", b"%PDF-1.4\njunk\n", "application/pdf")})
-    health = client.get("/api/health").json()
-    doc = client.get("/api/document").json()
-    check(
-        health["total_chunks"] > 0 and doc["loaded"] and doc["filename"] == "lab.pdf",
-        "two failed uploads left the good index serving questions",
-        f"health={health['total_chunks']} chunks, document={doc.get('filename')}",
-    )
+        original_cap = server.MAX_UPLOAD_BYTES
+        server.MAX_UPLOAD_BYTES = 4096
+        big = b"%PDF-1.4\n" + b"x" * 200000
+        r = client.post("/api/upload_pdf", files={"file": ("big.pdf", big, "application/pdf")})
+        server.MAX_UPLOAD_BYTES = original_cap
+        check(r.status_code == 413, f"upload over the size cap is refused (got {r.status_code})", http_detail(r))
 
-    r = client.post("/api/ask_text", json={"query": "which username does the login form take"})
-    payload = r.json()
-    check(
-        r.status_code == 200 and "login" in payload["answer"] and payload["sources"] == [1]
-        and not payload["is_out_of_context"],
-        "the surviving index still answers from the page it retrieved",
-        f"{r.status_code} answer={payload.get('answer')!r} sources={payload.get('sources')}",
-    )
+        r = client.post("/api/upload_pdf", files={"file": ("broken.pdf", b"%PDF-1.4\nnot a real body\n", "application/pdf")})
+        check(r.status_code in (415, 422), f"unreadable PDF is refused with a reason (got {r.status_code})", http_detail(r))
 
-    r = client.post("/api/ask_text", json={"query": "which pip packages do I install"})
-    pip_answer = r.json()["answer"]
-    check(
-        "selenium" in pip_answer and "pytest" in pip_answer
-        and not any(word in pip_answer for word in ("prepare", "laboratory", " today")),
-        "the pip answer lists packages, not the prose that followed them",
-        repr(pip_answer),
-    )
+        # A text-less PDF is a scanned page, and an empty index is useless: say so now.
+        r = client.post("/api/upload_pdf", files={"file": ("scan.pdf", make_pdf([]), "application/pdf")})
+        check(r.status_code == 422, f"PDF with no extractable text is refused (got {r.status_code})", http_detail(r))
+
+        # A good upload, then two bad ones: the live index must still answer.
+        r = client.post("/api/upload_pdf", files={"file": ("lab.pdf", make_pdf(DOC_LINES), "application/pdf")})
+        ok_upload = r.status_code == 200 and r.json()["stats"]["total_chunks"] > 0
+        detail = http_detail(r)
+        if ok_upload:
+            stats = r.json()["stats"]
+            detail = (f"{stats['total_chunks']} chunks in {stats['index_ms']}ms, "
+                      f"{stats['chunking']['text_preserved_pct']}% of the words indexed")
+        check(ok_upload, "synthetic PDF indexes with chunks to search", detail)
+
+        client.post("/api/upload_pdf", files={"file": ("scan.pdf", make_pdf([]), "application/pdf")})
+        client.post("/api/upload_pdf", files={"file": ("broken.pdf", b"%PDF-1.4\njunk\n", "application/pdf")})
+        health = client.get("/api/health").json()
+        doc = client.get("/api/document").json()
+        check(
+            health["total_chunks"] > 0 and doc["loaded"] and doc["filename"] == "lab.pdf",
+            "two failed uploads left the good index serving questions",
+            f"health={health['total_chunks']} chunks, document={doc.get('filename')}",
+        )
+
+        r = client.post("/api/ask_text", json={"query": "which username does the login form take"})
+        payload = r.json()
+        check(
+            r.status_code == 200 and "login" in payload["answer"] and payload["sources"] == [1]
+            and not payload["is_out_of_context"],
+            "the surviving index still answers from the page it retrieved",
+            f"{r.status_code} answer={payload.get('answer')!r} sources={payload.get('sources')}",
+        )
+        r = client.post("/api/ask_text", json={"query": "which pip packages do I install"})
+        pip_answer = r.json()["answer"]
+        check(
+            "selenium" in pip_answer and "pytest" in pip_answer
+            and not any(word in pip_answer for word in ("prepare", "laboratory", " today")),
+            "the pip answer lists packages, not the prose that followed them",
+            repr(pip_answer),
+        )
+    finally:
+        server.UPLOAD_DIR = original_upload_dir
+        server.agent.rag = original_rag
+        server.current_upload.clear()
+        server.current_upload.update(original_upload)
+        test_temp_dir.cleanup()
 
     # A list longer than what the answer is willing to read out must report the
     # remainder: a dropped package is an install that fails later.
