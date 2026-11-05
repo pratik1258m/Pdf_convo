@@ -108,7 +108,7 @@ agent = ConversationalAgent(rag_engine=PDFRAGEngine(), llm=GroundedLlm.from_env(
 # choice through /api/health rather than keeping it to itself.
 voice_engine = VoiceEngine(output_dir=AUDIO_DIR, default_voice=os.getenv("CONVO_DEFAULT_VOICE") or None)
 
-PAGE_CITATION_RE = re.compile(r"\s*\[Page\s+\d+\]", re.I)
+PAGE_CITATION_RE = re.compile(r"\s*\[Pages?\b[^\]]*\]", re.I)
 _MARKDOWN_RE = re.compile(r"\*{1,3}|`{1,3}|#{1,6}\s")
 SPEECH_SEGMENT_MAX_CHARS = 190
 
@@ -183,6 +183,12 @@ async def unhandled_error(request: Request, error: Exception):
 class Turn(BaseModel):
     query: str
     answer: Optional[str] = None
+
+
+class SetApiKeyRequest(BaseModel):
+    api_key: str
+    provider: Optional[str] = "groq"
+    model: Optional[str] = None
 
 
 class QueryRequest(BaseModel):
@@ -287,6 +293,7 @@ def answered(request: QueryRequest) -> Dict[str, Any]:
 @app.get("/api/health")
 def health_check():
     rag = agent.rag
+    has_key = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
     return {
         "status": "healthy",
         "current_document": rag.current_filename or "None",
@@ -295,8 +302,61 @@ def health_check():
         "default_voice": voice_engine.default_voice,
         "speech": provider_status(),
         "engine": engine_name(),
+        "has_api_key": has_key,
+        "llm_engine": agent.llm.name if isinstance(agent.llm, GroundedLlm) else "None",
         "chunking": dict(rag.profile),
     }
+
+
+@app.post("/api/set_api_key")
+def set_api_key(req: SetApiKeyRequest):
+    key = req.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API key cannot be empty.")
+
+    provider = (req.provider or "groq").lower()
+    if key.startswith("gsk_") or provider == "groq":
+        os.environ["GROQ_API_KEY"] = key
+        if req.model:
+            os.environ["CONVO_LLM_MODEL"] = req.model
+        elif not os.environ.get("CONVO_LLM_MODEL"):
+            os.environ["CONVO_LLM_MODEL"] = "qwen/qwen3.8-27b"
+    elif key.startswith("sk-") or provider == "openai":
+        os.environ["OPENAI_API_KEY"] = key
+        if req.model:
+            os.environ["CONVO_LLM_MODEL"] = req.model
+    elif provider in ("gemini", "google"):
+        os.environ["GEMINI_API_KEY"] = key
+        if req.model:
+            os.environ["CONVO_LLM_MODEL"] = req.model
+
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = [
+                    l for l in f.readlines()
+                    if not any(l.startswith(k + "=") for k in ["GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "CONVO_LLM_MODEL"])
+                ]
+        if os.environ.get("GROQ_API_KEY"):
+            lines.append(f"GROQ_API_KEY={os.environ['GROQ_API_KEY']}\n")
+        if os.environ.get("OPENAI_API_KEY"):
+            lines.append(f"OPENAI_API_KEY={os.environ['OPENAI_API_KEY']}\n")
+        if os.environ.get("GEMINI_API_KEY"):
+            lines.append(f"GEMINI_API_KEY={os.environ['GEMINI_API_KEY']}\n")
+        if os.environ.get("CONVO_LLM_MODEL"):
+            lines.append(f"CONVO_LLM_MODEL={os.environ['CONVO_LLM_MODEL']}\n")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as e:
+        logger.warning("Could not write .env: %s", e)
+
+    new_llm = GroundedLlm.from_env()
+    if new_llm:
+        agent.llm = new_llm
+        return {"ok": True, "engine": new_llm.name, "message": f"Connected to {new_llm.name}"}
+    return {"ok": False, "message": "Key saved, but no model initialized"}
 
 
 @app.get("/api/document")
@@ -485,7 +545,7 @@ def get_audio(filename: str):
 def index_page():
     html_file = os.path.join(os.path.dirname(__file__), "client_demo.html")
     if os.path.exists(html_file):
-        with open(html_file, "r") as handle:
+        with open(html_file, "r", encoding="utf-8") as handle:
             return handle.read()
     return "<h1>Real-Time Voice-to-Voice PDF Conversation API is Running</h1>"
 

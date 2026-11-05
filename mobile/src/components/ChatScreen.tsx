@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import * as DocumentPicker from 'expo-document-picker'
 import * as Haptics from 'expo-haptics'
-import { BackendError, askText, getDocument, getHealth, getVoices, speakSegments, uploadPdf } from '../api/backend'
+import { BackendError, askText, getDocument, getHealth, getVoices, setApiKey, speakSegments, uploadPdf } from '../api/backend'
 import { describeHostIssue } from '../api/normalize'
 import { useReplyPlayer } from '../audio/playback'
 import { useSpeechRecognition } from '../audio/speech'
@@ -598,6 +598,13 @@ export function ChatScreen({
         }}
         voiceName={selectedVoiceName}
         micLanguage={locale}
+        apiKey={settings.apiKey}
+        onSaveApiKey={async (key: string) => {
+          const res = await setApiKey(baseUrl, key)
+          update({ apiKey: key })
+          await checkHealth()
+          return res
+        }}
         voiceNote={
           selectedVoice
             ? selectedVoice.local

@@ -5,6 +5,7 @@ import type { ListenMode } from '../utils/format'
 
 export type Settings = {
   baseUrl: string
+  apiKey: string
   voiceId: string
   listen: ListenMode
   autoSpeak: boolean
@@ -18,6 +19,7 @@ const SETTINGS_KEY = 'convopdf.settings.v1'
 
 export const DEFAULT_SETTINGS: Settings = {
   baseUrl: '',
+  apiKey: '',
   // Empty means "however the server speaks fastest": the phone follows
   // /api/health's default_voice until an actual voice is chosen here.
   voiceId: '',
@@ -37,6 +39,7 @@ function sanitize(stored: Settings): Settings {
     ...DEFAULT_SETTINGS,
     ...stored,
     baseUrl: address.ok ? address.url : '',
+    apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
     voiceId: typeof stored.voiceId === 'string' ? stored.voiceId : DEFAULT_SETTINGS.voiceId,
     listen: stored.listen === 'en-IN' || stored.listen === 'hi-IN' ? stored.listen : 'auto',
     telemetry: stored.telemetry === true,

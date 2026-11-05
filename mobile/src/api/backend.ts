@@ -102,6 +102,20 @@ export function getHealth(baseUrl: string, signal?: AbortSignal): Promise<Health
   return request<HealthSnapshot>(baseUrl, '/api/health', { timeoutMs: 8000, signal })
 }
 
+export function setApiKey(
+  baseUrl: string,
+  apiKey: string,
+  provider: string = 'groq',
+  model?: string
+): Promise<{ ok: boolean; engine?: string; message: string }> {
+  return request<{ ok: boolean; engine?: string; message: string }>(baseUrl, '/api/set_api_key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey, provider, model }),
+    timeoutMs: 15000,
+  })
+}
+
 export function getVoices(baseUrl: string): Promise<VoiceOption[]> {
   return request<{ voices: VoiceOption[] }>(baseUrl, '/api/voices', { timeoutMs: 10000 }).then(
     (data) => data.voices ?? []

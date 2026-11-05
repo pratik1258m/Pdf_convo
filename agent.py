@@ -17,7 +17,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from rag_engine import PDFRAGEngine, SECTION_TITLE_RE, STOP_WORDS, _SPEECH_ACT, flow_lines, looks_like_heading, query_terms, split_sentences, stem, tokenize
+from rag_engine import (
+    DocumentChunk, PDFRAGEngine, SECTION_TITLE_RE, STOP_WORDS, SearchHit, _SPEECH_ACT,
+    flow_lines, heading_section, looks_like_heading, query_terms, requested_section,
+    split_sentences, stem, tokenize,
+)
 
 
 class LlmAnswerError(RuntimeError):
@@ -50,36 +54,23 @@ def _load_dotenv() -> None:
 # "asterisk asterisk".
 SYSTEM_PROMPT = (
     "Someone asked a spoken question about one document and hears your reply once. "
-    "Answer in one direct, concise sentence in plain words that read aloud cleanly - no bullets, "
-    "no markdown, no preamble such as 'the document says'. "
-    "State the exact answer directly and concisely without trailing fluff or unrelated commentary "
+    "Answer directly in plain words that read aloud cleanly - no bullets, no markdown, "
+    "no preamble such as 'the document says'. "
+    "A factual lookup is one sentence. An explanation, comparison, summary or 'why/how' "
+    "question may take two to four short sentences: combine the facts from as many of the "
+    "passages as they need and say how they relate, rather than quoting one line. "
+    "Use the conversation so far to resolve a follow-up such as 'it', 'that' or 'the second one'. "
+    "Include the exact names, numbers, dates, models and technical choices the passages state "
     "(for example, 'Install selenium and pytest. [Page 1]' or 'The login form takes username tomsmith. [Page 1]'). "
-    "Include specific names, numbers, dates, models, or technical choices mentioned in the text. "
-    "If the passages are in another language like Hindi or Sanskrit, translate and answer clearly in the language of the question. "
+    "If the passages are in another language like Hindi or Sanskrit, answer clearly in the language of the question. "
     "If a passage mentions the person or entity asked about, explain what the text states about them. "
     "A yes or no question starts with Yes or No. A how-many question starts with the number. "
     "Add nothing the passages do not state, and never mention the passages, the search or what "
-    "is missing. Give one page at the end, like [Page 4]. "
+    "is missing. End with the page or pages the answer draws on, like [Page 4]. "
     "If the passages cannot answer it, reply with exactly: NOT_IN_DOCUMENT"
 )
 
 NOT_FOUND_TOKEN = "NOT_IN_DOCUMENT"
-
-# The same listener, told the file cannot answer, still wants to leave with a reply.
-# This prompt carries no passages on purpose: it is the one place the assistant is
-# allowed to speak from what it knows, and the caller labels that answer as coming
-# from outside the document.
-OPEN_PROMPT = (
-    "Answer naturally, directly, and concisely in 1-2 sentences in plain words for speech. "
-    "Do not use preambles, disclaimers, or apologies (never say 'That is outside the file' or 'Based on what I know'). "
-    "If the question or term names a person, character, entity, or concept (for example, 'Kunti', 'Arjuna', 'Yudhishthir', 'Paris'), "
-    "explain who or what they are directly and accurately. "
-    "If it is a general question, state the answer directly. "
-    "No markdown formatting, no bullet points. "
-    "If you truly cannot answer, reply with exactly: NO_ANSWER"
-)
-
-UNKNOWN_TOKEN = "NO_ANSWER"
 
 
 def _usage_of(data: Any, style: str) -> Dict[str, int]:
@@ -147,34 +138,61 @@ class GroundedLlm:
         for these same passages: a model that has not replied by then must hand the
         turn over rather than leave a caller listening to silence.
         """
+        return self.answer_with_history(query, passages, history=None, timeout=timeout)
+
+    def answer_with_history(self, query: str, passages: List[Tuple[int, str, str]],
+                            history: Optional[List[Dict[str, str]]] = None,
+                            doc_name: str = "", note: str = "", timeout: float = 9.0) -> str:
+        """Grounded answer with the turns that led to the question.
+
+        A follow-up ("and the second one?", "why is that?") cannot be resolved from
+        the current question alone, and a model that sees only the new wording has to
+        guess which part of the document it refers to. The last turns are included as
+        conversation, not as evidence: every claim still has to come from `passages`.
+
+        `note` is a short fact about how this file writes things (an encoding quirk,
+        a naming convention). It is not evidence and adds no page of its own.
+        """
         context = "\n\n".join(
             f"[Page {page}] {f'({heading}) ' if heading else ''}{text}" for page, heading, text in passages
         )
+        turns = []
+        for turn in (history or [])[-3:]:
+            asked = (turn.get("query") or "").strip()
+            replied = (turn.get("answer") or "").strip()
+            if not asked:
+                continue
+            turns.append(f"Caller: {asked}" + (f"\nAssistant: {replied}" if replied else ""))
+        conversation = ("\n\nConversation so far:\n" + "\n\n".join(turns)) if turns else ""
         # The question comes last, after the material, and the reply is cued with
         # "Answer:" so the first words out of the model are the answer itself rather
         # than a restatement of the question.
         prompt = (
-            f"Document: {os.environ.get('CONVO_DOC_NAME', 'the document')}\n\n"
-            f"Passages:\n{context}\n\nQuestion: {query}\nAnswer:"
+            f"Document: {doc_name or os.environ.get('CONVO_DOC_NAME', 'the document')}\n"
+            f"{note + chr(10) if note else ''}"
+            f"Passages:\n{context}{conversation}\n\nQuestion: {query}\nAnswer:"
         )
         return self._complete(SYSTEM_PROMPT, prompt, timeout)
 
-    def open_answer(self, query: str, doc_name: str = "", timeout: float = 9.0) -> str:
-        """Answer naturally without disclaimers."""
-        context = f"Document context: The user is discussing '{doc_name}'. " if doc_name else ""
-        return self._complete(OPEN_PROMPT, f"{context}Question: {query}\nAnswer:", timeout)
-
     def suggest_search_terms(self, query: str, doc_hint: str = "", timeout: float = 4.0) -> str:
-        """Extract or translate 1-3 keywords to search in the document's script/vocabulary."""
+        """Translate and expand a question into the document's own search vocabulary.
+
+        A reader asks in English about a Hindi book, or uses "refused to fight" where
+        the text says "युद्ध नहीं करना". Lexical retrieval cannot bridge that, so the
+        model is asked for the handful of words the passage that answers it would use.
+        """
         prompt = (
             f"User question: {query}\n"
             f"{doc_hint}\n"
-            "Extract 1-3 essential keywords to search in this document for the answer.\n"
-            "If the document is in Hindi/Devanagari, output the keywords in Devanagari script.\n"
-            "Output ONLY the search keywords separated by spaces, nothing else."
+            "Give 3 to 8 essential search words or short phrases that the passage answering this "
+            "question would contain in this document.\n"
+            "Write them in the same language and script the document uses. If the document is in "
+            "Hindi/Devanagari, output Devanagari words, including the usual spellings of any names.\n"
+            "Translate the question's meaning; do not just copy the English words.\n"
+            "Output ONLY the space-separated search terms, nothing else."
         )
         try:
-            raw = self._complete("You are a search keyword extractor. Output only space-separated keywords.", prompt, timeout)
+            raw = self._complete("You extract search terms for a document. Output only the terms.", prompt, timeout)
             cleaned = " ".join(re.findall(r"[\w\u0900-\u097F]+", raw or ""))
             return cleaned
         except Exception:
@@ -198,10 +216,19 @@ class GroundedLlm:
                 ],
             }
 
-        try:
-            response = httpx.post(self.url, headers=self.headers, json=payload, timeout=timeout)
-        except httpx.HTTPError as error:
-            raise LlmAnswerError(f"network: {error}") from error
+        response = None
+        # A rate-limited gateway is a pause, not an answer: two short retries keep a
+        # burst of questions from dropping to the extractive path mid-conversation.
+        for attempt in range(3):
+            try:
+                response = httpx.post(self.url, headers=self.headers, json=payload, timeout=timeout)
+            except httpx.HTTPError as error:
+                raise LlmAnswerError(f"network: {error}") from error
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < 2:
+                    time.sleep(1.0 if attempt == 0 else 2.5)
+                    continue
+            break
 
         if response.status_code >= 400:
             raise LlmAnswerError(f"http {response.status_code}: {response.text[:180]}")
@@ -482,6 +509,16 @@ _POLAR_ASK_RE = re.compile(
 _DEFINE_ASK_RE = re.compile(r"^\s*(?:who|what)\s+(?:is|are|was|were)\b", re.I)
 _DOUBLE_ASK_RE = re.compile(r"\band\b.*\b(what|which|how|who|where|does|should|many|much)\b", re.I)
 _SECTIONS_ASK_RE = re.compile(r"\b(sections|headings|chapters|contents|table of contents|structure|titles)\b", re.I)
+# A question that names one structural part ("the first chapter") wants that part's
+# material, not the whole file. Steps and practicals are excluded: those ask for a
+# position inside a section, which the ordinal path already reads.
+_PART_ASK_RE = re.compile(r"\b(chapter|section|part|unit|module)\b", re.I)
+# The line a Devanagari book prints to close a chapter: "... प्रथमोऽध्यायः ॥१॥",
+# which a legacy font stores as "... थमोऽयायः". It is the document's own boundary
+# mark, so it survives whatever the typography did to the chapter numbers. The
+# closing visarga matters: a verse *about* chapters ("योऽयाया कतताः") is not the
+# end of one.
+_CHAPTER_MARK_RE = re.compile(r"ोऽयायः")
 _STEPS_ASK_RE = re.compile(r"\b(steps?|items?|points?|rules?|checklist|requirements|stages|phases)\b", re.I)
 # "What is the first step of practical 3" asks for a position in the file's own order.
 # The word is a closed class in every language, and the answer is the nth thing the
@@ -526,24 +563,93 @@ _RECAP_ASK_RE = re.compile(
     r"walk\s+(?:me\s+)?through|go\s+over|tell\s+me\s+about|give\s+me)\b",
     re.I,
 )
-# The model talking about the material it was handed instead of about the subject.
-# A document never calls itself "the provided passages", so this phrasing is always
-# the model explaining why it is not answering - which belongs in a refusal, not in
-# the sentence a caller hears out loud.
-_HEDGE_RE = re.compile(
-    r"\bi(?:'m| am| do not| don'?t| cannot| can'?t| have no| had no| was unable)\b"
-    r"|\b(?:unsure|uncertain|unable to (?:answer|determine|recall|verify))\b"
-    r"|\bno widely (?:known|recognized|documented)\b"
-    r"|\bwithout (?:the )?(?:specific|provided) (?:text|context|information|details)\b",
-    re.I,
-)
 
 _META_RE = re.compile(
     r"\b(?:the\s+)?(?:provided|given|supplied|retrieved|passed)\s+"
-    r"(?:passages?|context|excerpts?|text|information|snippets?|documents?)\b[^.]{0,60}"
-    r"\b(?:do(?:es)?\s+not|not)\b",
+    r"(?:(?:document|file|source)\s+)?(?:passages?|context|excerpts?|text|information|snippets?|documents?)\b[^.]{0,60}"
+    r"\b(?:do(?:es)?\s+not|did\s+not|not|cannot|can'?t)\b",
     re.I,
 )
+
+# A question that wants reasoning, not a single value: the answer is a relation
+# between passages, so one 40-word strip is not enough material to build it from.
+_ANALYTICAL_ASK_RE = re.compile(
+    r"\b(?:compar(?:e|ison|ing)|differ(?:ence|ences|ent|s)?|relationship|relat(?:e[sd]?|ion)|"
+    r"contrast|why|reasons?|explain|analys(?:e|is)|analyze|impact|effect|consequence|"
+    r"significance|advantage|disadvantage|pros?\s+and\s+cons?|how\s+(?:does|do|did))\b",
+    re.I,
+)
+
+# A pronoun or a reference back to the previous turn. A follow-up is resolved
+# against the last question before retrieval, or "and the second one?" searches
+# for "second" in a book that never says it.
+_FOLLOW_UP_RE = re.compile(
+    r"\b(?:it|its|this|that|these|those|they|them|their|he|him|his|she|her|hers|"
+    r"the\s+(?:first|second|third|fourth|fifth|last|next|previous|same)|"
+    r"more|another|above|previous|earlier)\b",
+    re.I,
+)
+
+# The nouns a question uses when it means the file itself, not something inside it.
+_DOC_NOUNS = frozenset(
+    "document documents file files pdf pdfs manual guide book paper story text content contents "
+    "report handbook chapter".split()
+)
+
+
+def _about_document(query: str, rag=None) -> bool:
+    """True when the question asks what the file is, not about something in it.
+
+    "What is this document about" and "what does the document say about Draupadi"
+    open the same way, but the second names a subject and is a normal lookup. Handing
+    the cover pages to a model for the second one is how the publisher's phone number
+    became the answer to a question about Draupadi.
+    """
+    if not _ABOUT_ASK_RE.search(query):
+        return False
+    # "summarise the first chapter" opens like "summarise the document", but it names
+    # one part. The index has that part; the overview does not.
+    if re.search(r"\b(?:chapter|module|unit|section|part|practical|experiment|page|step)\b", query, re.I) \
+            and re.search(r"\b(?:\d+|first|second|third|fourth|fifth|last)\b", query, re.I):
+        return False
+    tail = re.search(
+        r"\b(?:about|regarding|concerning|on)\s+(?:the\s+|this\s+)?([A-Za-z\u0900-\u097F][\w\u0900-\u097F-]*)",
+        query,
+        re.I,
+    )
+    if tail and tail.group(1).lower() not in _DOC_NOUNS:
+        return False
+    return True
+
+
+def _cross_lingual(query: str, rag: PDFRAGEngine) -> bool:
+    """Does the question speak a different vocabulary from the document itself.
+
+    An English question against a Devanagari book shares no word with it, so BM25
+    can only match stray numbers and names. Fewer than half of the question's
+    content words being document vocabulary is the signal to translate. A question
+    whose words are all stop words ("Who is Karna?", where *karna* is the Hinglish
+    verb) has no search terms at all, and needs the model to name what it means.
+    """
+    terms = [term for term in query_terms(query) if term not in _SPEECH_ACT]
+    latin_question = bool(re.search(r"[A-Za-z]{3,}", query)) and not re.search(r"[\u0900-\u097F]", query)
+    if getattr(rag, "is_devanagari", False) and latin_question:
+        # A Latin-script question about a Devanagari book is a translation problem
+        # by definition; a name the transliteration table happens to know is not
+        # enough to answer the sentence around it.
+        return True
+    if not terms:
+        return bool(re.search(r"[A-Za-z\u0900-\u097F]{3,}", query))
+    partners = rag.partner_map(terms)
+    known = sum(1 for term in terms if rag.df(term) or partners.get(term))
+    return known * 2 < len(terms)
+
+
+def _doc_hint(rag: PDFRAGEngine) -> str:
+    hint = f"Document: {_friendly_name(rag.current_filename)}. Total pages: {rag.total_pages}."
+    if getattr(rag, "is_devanagari", False):
+        hint += " The document text is in Hindi/Devanagari script."
+    return hint
 
 # Words that are not about the document at all. This is a closed class of greetings,
 # acknowledgements and questions about the assistant, which every language carries a
@@ -1113,7 +1219,40 @@ def _trim(line: str, words: int = 24) -> str:
     return " ".join(parts[:words]).rstrip(",;:") + "."
 
 
-_CITATION_RE = re.compile(r"\[Page\s+(\d+)\]", re.I)
+def _digest_answer(hits) -> Tuple[str, List[int]]:
+    """A short reading of the passages for a summary request the model could not polish.
+
+    A caller who asks for a chapter hears what that chapter contains: one sentence
+    from each of a few distinct pages, in the order the file presents them, with
+    those pages cited. It is the fallback for a failed model call, so it stays close
+    to the text and adds nothing the passages do not say.
+    """
+    sentences: List[str] = []
+    pages: List[int] = []
+    for hit in hits:
+        if hit.page_num in pages:
+            continue
+        text = " ".join((hit.chunk.text or "").split())
+        if len(text.split()) < 6:
+            continue
+        sentence = re.split(r"(?<=[.!?\u0964])\s+", text, maxsplit=1)[0]
+        line = _trim(sentence, 32)
+        if not line:
+            continue
+        sentences.append(line)
+        pages.append(hit.page_num)
+        if len(sentences) >= 3:
+            break
+    if not sentences:
+        return "", []
+    return " ".join(sentences) + " " + _citation(pages), pages
+
+
+# A model may cite one page or several in one bracket ("[Page 26, Page 30]").
+# Both are provenance, and parsing only the singular form left real pages out of
+# `sources` while the marker stayed in the text.
+_CITATION_RE = re.compile(r"\[Pages?\b[^\]]*\]", re.I)
+_PAGE_NUMBER_RE = re.compile(r"\d+")
 _DECORATION_RE = re.compile(r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002190-\U000021FF\uFE0F]+")
 
 
@@ -1142,8 +1281,21 @@ def _verified_citation(raw: str, hits) -> Tuple[str, List[int]]:
     were actually handed to the model.
     """
     pages = {hit.page_num for hit in hits}
-    cited = sorted({int(match.group(1)) for match in _CITATION_RE.finditer(raw)} & pages)
-    text = _CITATION_RE.sub(lambda match: match.group(0) if int(match.group(1)) in pages else "", raw)
+    cited = sorted({
+        int(number)
+        for match in _CITATION_RE.finditer(raw)
+        for number in _PAGE_NUMBER_RE.findall(match.group(0))
+    } & pages)
+
+    def keep(match: "re.Match") -> str:
+        numbers = [int(number) for number in _PAGE_NUMBER_RE.findall(match.group(0))]
+        kept = [number for number in numbers if number in pages]
+        return " ".join(f"[Page {number}]" for number in kept)
+
+    # One bracket holding three verified pages becomes three markers, and a bracket
+    # holding only invented pages disappears. The answer text and `sources` then
+    # describe the same evidence, which is what the phone renders.
+    text = _CITATION_RE.sub(keep, raw)
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return "", []
@@ -1169,15 +1321,252 @@ class ConversationalAgent:
         # Rotates the wording of greetings and refusals so three "hello"s in a row
         # are not the same sentence read back three times.
         self._turn = 0
+        # Translation is deterministic for a given question and document, and the
+        # same turn may search twice (first pass, then a widened retry).
+        self._translation_cache: Dict[Tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------ helpers
 
     def _expand_follow_up(self, query: str, history: Optional[List[Dict[str, str]]]) -> str:
-        """Short follow-ups ('and page 2?') inherit the previous question's terms."""
-        if tokenize(query) or not history:
+        """Short follow-ups ('and page 2?', 'why is that?') inherit the previous question.
+
+        A question with no content words of its own inherits everything. A short one
+        that points back with a pronoun or an ordinal inherits the subject but keeps
+        its own wording, so "and the second one?" searches the previous subject rather
+        than the word "second" alone.
+        """
+        if not history:
             return query
+        words = tokenize(query)
         previous = (history[-1] or {}).get("query") or ""
-        return f"{previous} {query}".strip() if tokenize(previous) else query
+        if not tokenize(previous):
+            return query
+        if not words:
+            # No searchable word is not the same as no question: "Who is Karna?" is a
+            # name the Hinglish stop-word list happens to contain, and inheriting the
+            # previous subject would answer a question the caller did not ask.
+            complete = re.match(
+                r"^\s*(?:who|what|which|where|when|why|how|is|are|was|were|does|do|did|"
+                r"can|could|should|would|will|has|have|had)\b",
+                query,
+                re.I,
+            )
+            if complete and len(re.findall(r"[\w\u0900-\u097F]+", query)) >= 3:
+                return query
+            return f"{previous} {query}".strip()
+        if len(words) <= 5 and _FOLLOW_UP_RE.search(query):
+            return f"{previous} {query}".strip()
+        return query
+
+    def _translated_query(self, query: str, rag: PDFRAGEngine) -> str:
+        """The question in the document's own vocabulary, cached for the turn."""
+        key = (query, rag.current_filename or "")
+        if key in self._translation_cache:
+            return self._translation_cache[key]
+        expanded = ""
+        suggest = getattr(self.llm, "suggest_search_terms", None)
+        if callable(suggest):
+            try:
+                expanded = (suggest(query, doc_hint=_doc_hint(rag)) or "").strip()
+            except Exception:
+                expanded = ""
+        if len(self._translation_cache) >= 64:
+            self._translation_cache.pop(next(iter(self._translation_cache)))
+        self._translation_cache[key] = expanded
+        return expanded
+
+    def _usable_query(self, text: str, rag: PDFRAGEngine) -> str:
+        """Drop translated words this file has no spelling for.
+
+        A model translating a question into the document's language cannot know
+        that a legacy font mangled it ("अस्वीकार" is stored as "अवकार"). The
+        unknown words contribute nothing to BM25, but they do make the gate read
+        the question as mostly unanswerable and reject the passages the one
+        recognisable name found. What survives here is what the index can rank.
+        """
+        terms = list(Counter(tokenize(text)))
+        partners = rag.partner_map(terms)
+        return " ".join(term for term in terms if rag.df(term) or partners.get(term))
+
+    def _retrieve(self, query: str, rag: PDFRAGEngine, top_k: int, threshold: float
+                  ) -> Tuple[List[SearchHit], bool, float]:
+        """Retrieve passages, translating the question into the file's language when needed.
+
+        Lexical retrieval only finds words the document uses. A question asked in
+        English about a Hindi book, or one paraphrased past recognition, has to be
+        asked again in the document's vocabulary before "not in this file" is a
+        truthful answer. The translated search never invents evidence: it returns
+        documents' own passages, and the gate still has to accept them.
+        """
+        hits, is_in_context, score = rag.search(query, top_k=top_k, threshold=threshold)
+        if self.llm is None:
+            return hits, is_in_context, score
+        if not (_cross_lingual(query, rag) or not is_in_context or not hits):
+            return self._prefer_introduction(query, hits), is_in_context, score
+
+        expanded = self._translated_query(query, rag)
+        if not expanded:
+            return self._prefer_introduction(query, hits), is_in_context, score
+        searchable = self._usable_query(expanded, rag)
+        if not searchable:
+            return self._prefer_introduction(query, hits), is_in_context, score
+        exp_hits, exp_ok, exp_score = rag.search(searchable, top_k=top_k, threshold=threshold)
+        if not exp_ok or not exp_hits:
+            return self._prefer_introduction(query, hits), is_in_context, score
+        if not is_in_context or not hits:
+            return self._prefer_introduction(query, exp_hits), True, exp_score
+        # Both found something on a cross-lingual question: the translated hits are
+        # the more trustworthy, because the original words only matched by accident
+        # (a number, a Latin name in a caption).
+        seen = {hit.chunk.chunk_id for hit in exp_hits}
+        merged = list(exp_hits) + [hit for hit in hits if hit.chunk.chunk_id not in seen]
+        return self._prefer_introduction(query, merged[:top_k]), True, score
+
+    @staticmethod
+    def _prefer_introduction(query: str, hits: List[SearchHit]) -> List[SearchHit]:
+        """Put the page that introduces the subject ahead of its later mentions.
+
+        "Who is Karna" in a 2,000-page epic ranks the page that repeats his name
+        most often (a battle scene) above the page that says who he was. Books
+        introduce a person the first time they name him, so for a definition or a
+        relationship the earliest retrieved page is put in front; the rest keep
+        their ranking, and every page is still one retrieval returned.
+        """
+        if len(hits) < 2 or not (_DEFINE_ASK_RE.search(query) or _ANALYTICAL_ASK_RE.search(query)):
+            return hits
+        earliest = min(range(len(hits)), key=lambda index: (hits[index].page_num, index))
+        if earliest == 0:
+            return hits
+        return [hits[earliest]] + hits[:earliest] + hits[earliest + 1:]
+
+    def _overview_hits(self, rag: PDFRAGEngine, limit: int = 10) -> List[SearchHit]:
+        """A spread of the file for a question about the file as a whole.
+
+        Reading the first two pages of a 2,000-page book gives the publisher's
+        address, not the book. The overview keeps the opening, then samples one
+        passage from the start of each distinct section, so the model sees the
+        document's actual range instead of its imprint.
+        """
+        content = [chunk for chunk in rag.chunks if not chunk.front_matter and not chunk.index_page]
+        if not content:
+            content = list(rag.chunks[:limit])
+        picks: List[DocumentChunk] = []
+        seen: set = set()
+
+        def add(chunk: DocumentChunk) -> None:
+            if chunk.chunk_id not in seen and len(picks) < limit:
+                seen.add(chunk.chunk_id)
+                picks.append(chunk)
+
+        for chunk in content[:2]:
+            add(chunk)
+        starts: List[DocumentChunk] = []
+        previous = None
+        for chunk in content:
+            heading = (chunk.heading or "").strip().lower()
+            if heading and heading != previous:
+                previous = heading
+                starts.append(chunk)
+        if not starts:
+            step = max(1, len(content) // limit)
+            starts = content[::step]
+        if len(starts) > limit:
+            step = len(starts) / limit
+            starts = [starts[int(index * step)] for index in range(limit)]
+        for chunk in starts:
+            add(chunk)
+        return [
+            SearchHit(chunk, score=1.0, coverage=1.0, terms=1, idf_mass=1.0,
+                      concepts=1, ideas=1.0, focus=True)
+            for chunk in picks
+        ]
+
+    def _chapter_hits(self, rag: PDFRAGEngine, ordinal: int, limit: int = 10) -> List[SearchHit]:
+        """Evenly spread passages from the chapter the reader named.
+
+        "Summarise the first chapter" cannot be a lexical lookup: the chapter's body
+        never repeats the words "first chapter", and the pages of a contents list do.
+        The file prints its own closing line for every chapter, so the nth chapter is
+        the run of text ending at the nth such line. Sampling across that run lets the
+        model summarise the chapter rather than the page that repeats the question.
+        """
+        markers = [
+            index for index, chunk in enumerate(rag.chunks)
+            if _CHAPTER_MARK_RE.search(chunk.text or "")
+        ]
+        if ordinal == -1:
+            ordinal = len(markers)
+        if ordinal < 1 or ordinal > len(markers):
+            return []
+        end = markers[ordinal - 1]
+        # The closing line can carry its own heading, so walk back to the last chunk
+        # that names the body and take that heading's whole run.
+        anchor = None
+        for back in range(1, 12):
+            if end - back < 0:
+                break
+            if (rag.chunks[end - back].heading or "").strip():
+                anchor = end - back
+                break
+        start = end
+        if anchor is not None:
+            heading = (rag.chunks[anchor].heading or "").strip().lower()
+            start = anchor
+            while start > 0 and (rag.chunks[start - 1].heading or "").strip().lower() == heading:
+                start -= 1
+        if end - start < 3:
+            # No usable heading run: the previous chapter's close is the next-best
+            # boundary the document itself provides.
+            start = markers[ordinal - 2] + 1 if ordinal > 1 else start
+        span = rag.chunks[start:end + 1]
+        if len(span) > limit:
+            step = len(span) / limit
+            span = [span[int(index * step)] for index in range(limit)]
+        return [
+            SearchHit(chunk, score=1.0, coverage=1.0, terms=1, idf_mass=1.0,
+                      concepts=1, ideas=1.0, focus=True)
+            for chunk in span
+        ]
+
+    def _ask_model(self, query: str, passages: List[Tuple[int, str, str]],
+                   history: Optional[List[Dict[str, str]]]) -> str:
+        """Call the configured model, keeping hand-written test doubles working.
+
+        A subclass that overrides `answer` was written against the old signature,
+        so only the real engine is offered the conversation-aware call.
+        """
+        with_history = getattr(self.llm, "answer_with_history", None)
+        if callable(with_history) and type(self.llm).answer is GroundedLlm.answer:
+            return with_history(query, passages, history=history,
+                                doc_name=_friendly_name(self.rag.current_filename),
+                                note=self._vocabulary_note(query))
+        return self.llm.answer(query, passages)
+
+    def _vocabulary_note(self, query: str) -> str:
+        """Tell the model how this file spells the names the caller used.
+
+        A legacy-font scan stores "Draupadi" as "ौपद" and "Krishna" as "ीकृ".
+        The passages are right, but a model that cannot recognise the name in
+        them answers that the file never mentions her. The mapping is read from
+        the index itself, so it is a fact about this file, not a guess.
+        """
+        rag = self.rag
+        if rag is None or not getattr(rag, "is_devanagari", False):
+            return ""
+        pairs: List[str] = []
+        for term in Counter(tokenize(query)):
+            if not re.search(r"[A-Za-z]", term) or rag.df(term):
+                continue
+            for alt in rag.partner_map([term]).get(term, []):
+                if re.search(r"[\u0900-\u097F]", alt) and rag.df(alt):
+                    pairs.append(f"'{term}' is written '{alt}'")
+                    break
+            if len(pairs) >= 6:
+                break
+        if not pairs:
+            return ""
+        return ("Encoding note: this scan's font renders some Devanagari conjuncts "
+                "truncated, so the names appear shortened: " + "; ".join(pairs) + ".\n")
 
     def _passages(self, hits, rag: PDFRAGEngine) -> List[Tuple[int, str, str]]:
         """Passages for the model, with the rows of any grid written back as pairs.
@@ -1300,9 +1689,8 @@ class ConversationalAgent:
 
         The first version ran to three sentences and ended in a question, which is how
         a form letter sounds. A caller is listening rather than reading, so the refusal
-        and one way forward is the whole of it. This is the last resort: with a model
-        configured the turn is answered by `_outside_answer` instead, and only a build
-        running without one ever hears these lines.
+        and one way forward is the whole of it. Every answer stays inside the uploaded
+        file, so this is the reply when the file itself cannot answer.
         """
         name = _friendly_name(self.rag.current_filename)
         turn = self._turn % 3
@@ -1315,45 +1703,16 @@ class ConversationalAgent:
         return f"{lead} {tail}"
 
     def _outside_answer(self, query: str, timings: Dict[str, float]) -> Dict[str, Any]:
-        """Answer a question the file cannot answer - and say where the answer came from.
+        """Say the file cannot answer, and never fill the gap from general knowledge.
 
-        A listener who asks for the capital of France wants Paris, not a lecture about
-        the contents of a lab manual. The reply never gets a page marker and stays
-        flagged as out of context, so the phone labels it while the voice still answers.
-        With no model configured there is nothing to answer from, and the turn says so
-        rather than inventing a fact the caller cannot check.
+        An answer that is not in the uploaded document is the wrong answer however
+        true it is elsewhere: a question bank must not come back with a film plot,
+        and a chapter of the Mahabharata must not come back with the distance to the
+        moon. The turn refuses in one breath, keeps the out-of-context flag the
+        phone labels, and cites nothing.
         """
-        if self.llm is None:
-            # A refusal carries no evidence about the question, so it reports none:
-            # `retrieval_score` is read as "how much of what you asked did I answer".
-            return self._pack(self._polite_out_of_context(query), [], 0.0,
-                              "no model configured to answer outside the document", timings)
-        try:
-            # A turn the phone is waiting on gets one model budget, not two: the
-            # grounded call has already spent part of it, and a caller listening to
-            # silence for twenty seconds has already lost the answer.
-            spent = (timings.get("total_ms") or 0.0) / 1000.0
-            doc_name = _friendly_name(self.rag.current_filename) if self.rag else ""
-            raw = _spoken_shape(self.llm.open_answer(query, doc_name=doc_name, timeout=max(3.0, min(9.0, 14.0 - spent))))
-        except Exception as error:
-            return self._pack(self._polite_out_of_context(query), [], 0.0,
-                              f"general knowledge call failed: {_brief(error)}", timings)
-        if not raw or UNKNOWN_TOKEN in raw.upper() or _HEDGE_RE.search(raw):
-            return self._pack(self._polite_out_of_context(query), [], 0.0,
-                              f"{self.llm.name} had no answer of its own", timings)
-        # A page marker here would be a claim about a file the model was never given.
-        text = re.sub(r"\s+", " ", _CITATION_RE.sub("", raw)).strip()
-        # Clean any accidental lead apologies from the model
-        text = re.sub(r"^(?:that is outside|not part of|the document does not cover|as an ai)[^:]*:\s*", "", text, flags=re.I).strip()
-        q_lower = query.lower()
-        doc_terms = set(tokenize(self.rag.current_filename or "")) if self.rag else set()
-        query_tokens = set(tokenize(query))
-        about_doc = (
-            bool(query_tokens & doc_terms)
-            or bool(_ABOUT_ASK_RE.search(query))
-            or any(w in q_lower for w in ("this document", "the document", "this pdf", "the pdf", "this file", "the file", "this book", "the book"))
-        )
-        return self._pack(text, [], 0.0, self.llm.name, timings, refusal=not about_doc)
+        return self._pack(self._polite_out_of_context(query), [], 0.0,
+                          "not in document", timings)
 
     def _structure_answer(self, query: str, hits, rag: PDFRAGEngine) -> Optional[Tuple[str, List[int]]]:
         """Answer a question about the shape of the file from the index itself.
@@ -1362,7 +1721,7 @@ class ConversationalAgent:
         the answer is the structure the chunker already recorded, so reading it out is
         both cheaper and more complete than ranking sentences from four passages.
         """
-        if _ABOUT_ASK_RE.search(query):
+        if _about_document(query, rag):
             if self.llm is not None:
                 # When an LLM is configured, generate a synthesized summary of the document
                 # from key overview passages rather than listing section titles.
@@ -1590,42 +1949,41 @@ class ConversationalAgent:
                     return result
                 return self._outside_answer(previous, result["timings"])
 
+        cleaned_search = _GREETING_PREFIX_RE.sub("", search_query).strip()
+        if cleaned_search and tokenize(cleaned_search):
+            search_query = cleaned_search
+
+        about = _about_document(search_query, rag)
+        # A named structural part is resolved from the file's own order, not by
+        # ranking sentences against the words "first chapter".
+        part = requested_section(search_query) if _PART_ASK_RE.search(search_query) else None
+        numbered = any(heading_section(chunk.heading) for chunk in rag.chunks) if part is not None else False
         top_k = self.top_k * 2 if _retry else self.top_k
         # A file cut into short passages needs more of them in front of the model:
         # three thin mentions of a name read to a careful model as "this file never
         # explains him", which is the difference between an answer and a refusal.
         if rag.words_avg < 20:
             top_k = max(top_k, 8)
-        cleaned_search = _GREETING_PREFIX_RE.sub("", search_query).strip()
-        if cleaned_search and tokenize(cleaned_search):
-            search_query = cleaned_search
-
-        if _DEFINE_ASK_RE.search(search_query):
+        if (_DEFINE_ASK_RE.search(search_query) or _ANALYTICAL_ASK_RE.search(search_query)
+                or _RECAP_ASK_RE.search(search_query) or about):
             # "Who is X" is answered by the one line in the book that describes X, and a
             # 686-page scan buries it under forty mentions of him. A lookup needs the top
-            # passage; a definition needs the top few, and retrieval is sub-millisecond,
-            # so the only cost is a slightly longer prompt on the questions that need it.
+            # passage; a definition or a comparison needs the top few, and retrieval is
+            # sub-millisecond, so the only cost is a slightly longer prompt.
             top_k = max(top_k, 8)
         retrieved = time.perf_counter()
-        if _ABOUT_ASK_RE.search(search_query) and rag.chunks and self.llm is not None:
-            overview_chunks = []
-            for c in rag.chunks:
-                h = (c.heading or "").lower()
-                if c.page_num <= 2 or any(k in h for k in ["overview", "summary", "plan", "intro", "product", "abstract", "purpose", "scope", "definition"]):
-                    overview_chunks.append(c)
-                if len(overview_chunks) >= 6:
-                    break
-            if not overview_chunks:
-                overview_chunks = rag.chunks[:6]
-            from rag_engine import SearchHit
-            hits = [
-                SearchHit(c, score=1.0, coverage=1.0, terms=1, idf_mass=1.0, concepts=1, ideas=1.0, focus=True)
-                for c in overview_chunks
-            ]
+        if about and rag.chunks and self.llm is not None:
+            hits = self._overview_hits(rag)
             is_in_context = True
             score = 1.0
+        elif part is not None and not numbered:
+            chapter_hits = self._chapter_hits(rag, part)
+            if chapter_hits:
+                hits, is_in_context, score = chapter_hits, True, 1.0
+            else:
+                hits, is_in_context, score = self._retrieve(search_query, rag, top_k, self.threshold)
         else:
-            hits, is_in_context, score = rag.search(search_query, top_k=top_k, threshold=self.threshold)
+            hits, is_in_context, score = self._retrieve(search_query, rag, top_k, self.threshold)
         retrieval_ms = _ms(retrieved)
         synthesised = time.perf_counter()
 
@@ -1640,42 +1998,55 @@ class ConversationalAgent:
             answer, cited = structure
             return self._pack(answer, cited, score, "index structure", timed())
 
-        if (not is_in_context or not hits) and self.llm is not None and rag.chunks:
-            try:
-                doc_hint = f"Document: {_friendly_name(rag.current_filename)}. Total pages: {rag.total_pages}."
-                if getattr(rag, "is_devanagari", False):
-                    doc_hint += " The document text is in Hindi/Devanagari script."
-                expanded_query = self.llm.suggest_search_terms(search_query, doc_hint=doc_hint)
-                if expanded_query:
-                    exp_hits, exp_in_context, exp_score = rag.search(expanded_query, top_k=top_k, threshold=self.threshold)
-                    if exp_in_context and exp_hits:
-                        hits, is_in_context, score = exp_hits, exp_in_context, exp_score
-            except Exception:
-                pass
-
         if not is_in_context or not hits:
             return self._outside_answer(search_query, timed())
 
         if self.llm is not None:
-            passages = self._passages(hits, rag)
+            # A fact is rarely one 40-word strip: the sentence before names the
+            # subject and the one after states the consequence, so the model gets the
+            # hits plus their neighbours.
+            model_hits = rag.context_window(hits, window=1, limit=max(12, top_k + 4))
             try:
-                raw = self.llm.answer(search_query, passages)
+                raw = _spoken_shape(self._ask_model(search_query, self._passages(model_hits, rag), history))
             except Exception as error:
                 # Any model failure at all, including one nobody anticipated, costs
                 # the polished wording and nothing else: the same passages still
                 # produce a grounded, citable answer.
                 return self._from_index(search_query, hits, rag, score, timed(),
                                         f"extractive (model call failed: {_brief(error)})")
-            raw = _spoken_shape(raw)
             if NOT_FOUND_TOKEN in raw.upper() or _META_RE.search(raw):
+                # Before accepting the decline, hand the model more of the
+                # neighbourhood: a comparison or a rule often needs the paragraph
+                # on either side of every hit, and one declined call is cheap
+                # evidence that the context was cut too tight.
+                wider = rag.context_window(hits, window=2, limit=max(16, top_k * 2 + 6))
+                if len(wider) > len(model_hits):
+                    try:
+                        retried = _spoken_shape(
+                            self._ask_model(search_query, self._passages(wider, rag), history)
+                        )
+                    except Exception:
+                        retried = ""
+                    if retried and NOT_FOUND_TOKEN not in retried.upper() and not _META_RE.search(retried):
+                        answer, cited = _verified_citation(retried, wider)
+                        if answer:
+                            return self._pack(answer, cited, score, self.llm.name, timed())
                 # The model's own not-found marker anywhere in the reply, however
                 # worded around it, is a decline - as is explaining that the material
                 # handed to it does not contain the answer. Its length is not evidence,
                 # and a sentence about "the provided passages" is not something a
                 # caller should hear as an answer.
+                #
+                # A question of causation or comparison cannot be answered by the
+                # sentence that merely repeats its subject. The model read the wider
+                # neighbourhood and found no explanation there; a lexical line that
+                # shares the name is a guess, so the turn says the file does not
+                # answer instead of quoting one.
+                if _ANALYTICAL_ASK_RE.search(search_query):
+                    return self._outside_answer(search_query, timed())
                 return self._from_index(search_query, hits, rag, score, timed(),
                                         f"extractive ({self.llm.name} declined)", prose_only=True)
-            answer, cited = _verified_citation(raw, hits)
+            answer, cited = _verified_citation(raw, model_hits)
             if not answer:
                 return self._from_index(search_query, hits, rag, score, timed(),
                                         f"extractive ({self.llm.name} cited nothing usable)")
@@ -1718,17 +2089,30 @@ class ConversationalAgent:
     def _from_index(self, query: str, hits, rag: PDFRAGEngine, score: float,
                     timings: Dict[str, float], engine: str,
                     prose_only: bool = False) -> Dict[str, Any]:
-        """Answer from the passages the model could not use, or answer from outside them.
+        """Answer from the passages the model could not use, or refuse honestly.
 
         A decline is the model's judgement about wording, not about the index, so the
         same hits go through the extractive synthesiser. It is held to a higher bar in
         this branch: the model has already said the passages do not answer, so quoting
         a line of HTML from them would be a guess dressed as a citation. When the prose
-        that carries the question's own words fails too, the turn stops citing and
-        answers from what the assistant knows, labelled as outside the file.
+        that carries the question's own words fails too, a summary question gets a
+        digest of the passages and everything else is refused - the answers stay inside
+        the uploaded file either way.
         """
         answer, cited = self._extractive_answer(query, hits, rag, prose_only=prose_only)
         if not cited:
+            # A summary has no needle to find: the caller wants the gist of a part or
+            # a whole, which lives across the passages rather than in one line. When
+            # the model could not polish it, read a sentence from each of a few pages
+            # instead of pretending the file has nothing to say. A Devanagari scan is
+            # left out: this library's legacy font mangles conjuncts, so quoting it
+            # verbatim would be read aloud as nonsense rather than as a summary.
+            if (_RECAP_ASK_RE.search(query) or requested_section(query) is not None) \
+                    and not getattr(rag, "is_devanagari", False):
+                digest, pages = _digest_answer(hits)
+                if digest:
+                    return self._pack(digest, pages, score,
+                                      f"{engine} (summary of the file's passages)", timings)
             # The passages hold the subject but not an answer-shaped sentence for it.
             # Saying the file's own words about that subject is honest; saying a book
             # that names him 203 times does not cover him is not.

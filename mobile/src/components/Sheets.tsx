@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition'
 import { colors, font, radius, spacing } from '../theme'
 import { Btn, Chip, SectionTitle, Sheet, StatusDot } from './ui'
@@ -120,6 +120,8 @@ export function SettingsSheet({
   micLanguage,
   voiceNote,
   onClearConversation,
+  apiKey,
+  onSaveApiKey,
 }: {
   visible: boolean
   onClose: () => void
@@ -143,8 +145,31 @@ export function SettingsSheet({
   /** Where the audio is made, so latency is explainable without reading a log. */
   voiceNote?: string
   onClearConversation: () => void
+  apiKey?: string
+  onSaveApiKey?: (key: string) => Promise<{ ok: boolean; message: string }>
 }) {
   const [confirmClear, setConfirmClear] = useState(false)
+  const [keyInput, setKeyInput] = useState(apiKey || '')
+  const [savingKey, setSavingKey] = useState(false)
+  const [keyFeedback, setKeyFeedback] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (apiKey) setKeyInput(apiKey)
+  }, [apiKey])
+
+  async function handleSaveKey() {
+    if (!onSaveApiKey || !keyInput.trim()) return
+    setSavingKey(true)
+    setKeyFeedback(null)
+    try {
+      const res = await onSaveApiKey(keyInput.trim())
+      setKeyFeedback(res.message || 'API key saved!')
+    } catch (err) {
+      setKeyFeedback(err instanceof Error ? err.message : 'Failed to save key')
+    } finally {
+      setSavingKey(false)
+    }
+  }
   const [diagnostics, setDiagnostics] = useState<string[]>([])
 
   useEffect(() => {
@@ -206,6 +231,37 @@ export function SettingsSheet({
         ) : null}
         {healthDetail ? <Text style={styles.warn}>{healthDetail}</Text> : null}
         <Btn label="Re-check connection" variant="soft" onPress={onRecheck} style={{ marginTop: spacing.md }} />
+      </View>
+
+      <SectionTitle>LLM & AI Model</SectionTitle>
+      <View style={styles.card}>
+        <Text style={styles.subtle}>
+          Answer Engine: {health?.engine || 'extractive bm25 (no model configured)'}
+        </Text>
+        <Text style={[styles.switchLabel, { marginTop: spacing.sm, fontSize: font.sm }]}>
+          API Key (Groq / OpenAI)
+        </Text>
+        <TextInput
+          value={keyInput}
+          onChangeText={setKeyInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          placeholder="Enter gsk_... or sk-..."
+          placeholderTextColor={colors.textFaint}
+          style={[styles.input, { marginVertical: spacing.sm }]}
+        />
+        {keyFeedback ? (
+          <Text style={[styles.subtle, { color: keyFeedback.includes('Connect') || keyFeedback.includes('saved') ? colors.ok : colors.danger, marginBottom: spacing.xs }]}>
+            {keyFeedback}
+          </Text>
+        ) : null}
+        <Btn
+          label={savingKey ? 'Activating Key...' : 'Save & Activate Key'}
+          variant="soft"
+          loading={savingKey}
+          onPress={handleSaveKey}
+        />
       </View>
 
       <SectionTitle>Playback</SectionTitle>
@@ -312,4 +368,14 @@ const styles = StyleSheet.create({
   diagnostic: { color: colors.textMuted, fontSize: font.xs, lineHeight: 18, marginBottom: 2 },
   tagWrap: { flexDirection: 'row', flexWrap: 'wrap' },
   muted: { color: colors.textMuted, fontSize: font.md },
+  input: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    color: colors.text,
+    fontSize: font.sm,
+  },
 })

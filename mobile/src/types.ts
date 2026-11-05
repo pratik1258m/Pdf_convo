@@ -46,6 +46,8 @@ export type HealthSnapshot = {
   available_voices: number
   /** The voice the server would use if this phone expressed no preference. */
   default_voice?: string
+  has_api_key?: boolean
+  llm_engine?: string
   /** Per-engine availability, so Settings can say why the fast voice is greyed out. */
   speech?: Record<string, { local: boolean; format: string; voices: number; usable: number; available: boolean; why_not: string }>
   engine?: string

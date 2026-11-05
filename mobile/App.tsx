@@ -37,6 +37,7 @@ function Root() {
     return (
       <ConnectScreen
         settings={settings}
+        update={update}
         onConnect={(url) => {
           rememberUrl(url)
           setServer(url)

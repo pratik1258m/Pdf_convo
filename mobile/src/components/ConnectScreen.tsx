@@ -11,7 +11,7 @@ import {
 } from 'react-native'
 import Constants from 'expo-constants'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { BackendError, getHealth } from '../api/backend'
+import { BackendError, getHealth, setApiKey } from '../api/backend'
 import { USB_REVERSE_URL, describeHostIssue, normalizeBaseUrl, suggestFromDevServerHost } from '../api/normalize'
 import type { HealthSnapshot } from '../types'
 import type { Settings } from '../state/settings'
@@ -20,9 +20,11 @@ import { Btn, Chip, SectionTitle, StatusDot } from './ui'
 
 export function ConnectScreen({
   settings,
+  update,
   onConnect,
 }: {
   settings: Settings
+  update?: (patch: Partial<Settings>) => void
   onConnect: (url: string, health: HealthSnapshot) => void
 }) {
   const insets = useSafeAreaInsets()
@@ -34,6 +36,7 @@ export function ConnectScreen({
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; title: string; body: string } | null>(null)
   const [health, setHealth] = useState<HealthSnapshot | null>(null)
+  const [apiKey, setApiKeyInput] = useState(settings.apiKey || '')
 
   const parsed = useMemo(() => normalizeBaseUrl(input.trim()), [input])
   const hostIssue = describeHostIssue(input.trim())
@@ -46,6 +49,12 @@ export function ConnectScreen({
     setBusy(true)
     setResult(null)
     try {
+      if (apiKey.trim()) {
+        try {
+          await setApiKey(parsed.url, apiKey.trim())
+          if (update) update({ apiKey: apiKey.trim() })
+        } catch {}
+      }
       const snapshot = await getHealth(parsed.url)
       setHealth(snapshot)
       setResult({
@@ -124,6 +133,20 @@ export function ConnectScreen({
             ))}
           </View>
         ) : null}
+
+        <Text style={[styles.label, { marginTop: spacing.md }]}>LLM API Key (optional Groq / OpenAI)</Text>
+        <TextInput
+          value={apiKey}
+          onChangeText={setApiKeyInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          placeholder="gsk_... or sk-..."
+          placeholderTextColor={colors.textFaint}
+          style={[styles.input, { marginBottom: spacing.md }]}
+          returnKeyType="done"
+          accessibilityLabel="LLM API Key"
+        />
 
         <Btn label={busy ? 'Checking server' : 'Test and connect'} onPress={connect} loading={busy} disabled={busy} />
         {result ? (

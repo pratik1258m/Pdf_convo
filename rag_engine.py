@@ -333,6 +333,20 @@ _INDIC_TRANSLITERATION_MAP: Dict[str, List[str]] = {
     "ashwatthama": ["अथामा", "अश्वत्थामा"],
 }
 
+# A question translated into the document's language arrives in dictionary
+# spelling, while a legacy-font scan stores the name truncated ("द्रौपदी" ->
+# "ौपद", "अर्जुन" -> "अजुन"). The table above goes English -> spellings; the
+# reverse index lets a translated Devanagari word reach the spelling the file
+# actually contains, instead of finding nothing and refusing a book that names
+# the subject fifty times.
+_INDIC_REVERSE_MAP: Dict[str, List[str]] = {}
+for _variant_list in _INDIC_TRANSLITERATION_MAP.values():
+    for _variant in _variant_list:
+        _siblings = _INDIC_REVERSE_MAP.setdefault(_variant, [])
+        for _sibling in _variant_list:
+            if _sibling != _variant and _sibling not in _siblings:
+                _siblings.append(_sibling)
+
 # Front matter restates the whole file, so it shares some words with every specific
 # question asked against it and out-ranks the section that actually states the fact.
 # Same reasoning as a contents page, one layer up: an abstract is a recap of the body,
@@ -482,6 +496,16 @@ def looks_like_heading(line: str) -> bool:
 
 _LEADER_RE = re.compile(r"(?:\.\s+){2,}\.")
 
+# An imprint page lists the publisher, the edition, a phone number and a price. It
+# repeats the book's title and therefore matches almost every question about it,
+# while holding nothing a reader asked for. A URL is normal content in an API
+# reference, so only the markers that belong to publication paperwork count.
+_BOILERPLATE_RE = re.compile(
+    r"\b[\w.+-]+@[\w-]+\.[\w.]+\b|\bISBN\b|\bISSN\b|copyright|©"
+    r"|\bprinted\s+by\b|\bpublished\s+by\b",
+    re.I,
+)
+
 
 def one_edit_apart(term: str, other: str) -> bool:
     """True when the two words differ by a single substitution, insertion or loss."""
@@ -509,6 +533,9 @@ class DocumentChunk:
         # passage under it repeats every topic without stating any of them; the section
         # that carries the fact outranks it.
         self.recap_heading = bool(heading and _RECAP_HEADING_RE.search(heading))
+        # A title page, imprint or copyright notice carries the document's name but no
+        # content: it matches nearly any question about the file and answers none.
+        self.front_matter = bool(_BOILERPLATE_RE.search(self.text))
         # A quantity question is answered by a figure, and a file spells figures both
         # ways: "12 days" and "twelve days". Measured in `_build_index`, where the
         # passage's own vocabulary has already been worked out.
@@ -607,6 +634,10 @@ class PDFRAGEngine:
         # A recap is a summary of the body, and the body states the fact itself, so the
         # passage under "Abstract" competes at a discount rather than head to head.
         self.recap_penalty = 0.7
+        # An imprint page repeats the title, the publisher and the price, so it matches
+        # any question about the file without answering one. It stays searchable for a
+        # question that really is about the edition, at a clear discount.
+        self.front_matter_penalty = 0.35
         # "How many", "what is the fee" and "which year" are answered by a figure. A
         # passage holding no digit cannot be that answer however many of the question's
         # words it repeats, so a figure earns its place in the ranking rather than the
@@ -638,6 +669,7 @@ class PDFRAGEngine:
         self._titles: List[str] = []
         self._table_headers: Dict[int, List[str]] = {}
         self._table_rows_labeled = 0
+        self._by_id: Dict[int, DocumentChunk] = {}
         self.rows: List[TableRow] = []
 
     def load_pdf(self, file_path: str) -> Dict[str, Any]:
@@ -653,6 +685,7 @@ class PDFRAGEngine:
         self._titles: List[str] = []
         self._table_headers: Dict[int, List[str]] = {}
         self._table_rows_labeled = 0
+        self._by_id: Dict[int, DocumentChunk] = {}
         self.rows = []
         page_texts: List[str] = []
 
@@ -1070,6 +1103,7 @@ class PDFRAGEngine:
         self._df = {}
         self._page_terms = {}
         self._heading_terms = set()
+        self._by_id = {chunk.chunk_id: chunk for chunk in self.chunks}
         lengths: List[int] = []
         body_lengths: List[int] = []
         heading_lengths: List[int] = []
@@ -1250,10 +1284,21 @@ class PDFRAGEngine:
                             seen.add(folded)
                             out.setdefault(term, []).append(folded)
                 elif _DEVANAGARI_RE.search(term):
+                    # The word arrives in dictionary spelling ('द्रौपदी'); the scan
+                    # may store a different fragment of it ('ौपद'). Both are in the
+                    # transliteration table, so its siblings are valid spellings.
+                    for alt in _INDIC_REVERSE_MAP.get(term, ()):
+                        if alt in self._df and alt not in seen:
+                            seen.add(alt)
+                            out.setdefault(term, []).append(alt)
                     folded = fold_devanagari(term)
                     if folded in self._df and folded not in seen:
                         seen.add(folded)
                         out.setdefault(term, []).append(folded)
+                    for alt in _INDIC_REVERSE_MAP.get(folded, ()):
+                        if alt in self._df and alt not in seen:
+                            seen.add(alt)
+                            out.setdefault(term, []).append(alt)
         return out
 
     def _paraphrase_partners(self, terms: List[str]) -> List[str]:
@@ -1311,6 +1356,19 @@ class PDFRAGEngine:
             return [], False, 0.0
 
         spoken = list(Counter(query_terms(query)))
+        # "Karna" is both a Mahabharata hero and the Hinglish verb "to do", so the stop
+        # list drops it before retrieval and "Who is Karna?" depended entirely on the
+        # model translating the name. In a Devanagari document the same word is a name
+        # the transliteration table knows, so it is readmitted as a search term.
+        named: List[str] = []
+        if getattr(self, "is_devanagari", False):
+            named = [
+                word for word in dict.fromkeys(re.findall(r"[A-Za-z][A-Za-z']{2,}", query.lower()))
+                if word in _INDIC_TRANSLITERATION_MAP
+            ]
+        for word in named:
+            if word not in spoken:
+                spoken.append(word)
         if not spoken:
             return [], False, 0.0
         # The words the user actually said, before ordinals and spelled-out
@@ -1318,10 +1376,10 @@ class PDFRAGEngine:
         # vocabulary, and an injected "five" would fail its own test.
         # Exclude meta terms and tokens appearing in the document's filename.
         doc_terms = set(tokenize(self.current_filename or ""))
-        meta_terms = _SPEECH_ACT | doc_terms
-        content = [term for term in Counter(tokenize(query)) if term not in meta_terms]
+        meta_terms = (_SPEECH_ACT | doc_terms) - set(named)
+        content = [term for term in Counter(tokenize(query) + named) if term not in meta_terms]
         if not content:
-            content = [term for term in Counter(tokenize(query)) if term not in _SPEECH_ACT] or list(Counter(tokenize(query)))
+            content = [term for term in Counter(tokenize(query) + named) if term not in (_SPEECH_ACT - set(named))] or list(Counter(tokenize(query) + named))
         informative = [term for term in spoken if term not in meta_terms]
         if not informative:
             informative = [term for term in spoken if term not in _SPEECH_ACT] or list(spoken)
@@ -1364,6 +1422,8 @@ class PDFRAGEngine:
                 raw *= self.index_page_penalty
             if chunk.recap_heading:
                 raw *= self.recap_penalty
+            if chunk.front_matter:
+                raw *= self.front_matter_penalty
             if asks_quantity and raw > 0 and not chunk.has_digit:
                 # Not a veto: the passage that says "twelve days" without writing 12 is
                 # still reachable, but only when it matches harder than the figures.
@@ -1442,6 +1502,44 @@ class PDFRAGEngine:
         # passage would have been worth: a refusal that claims a perfect match reads
         # as though the engine threw the answer away, and it did not.
         return kept, True, round(max(max(hit.coverage, hit.ideas) for hit in kept), 4)
+
+    def context_window(self, hits: List["SearchHit"], window: int = 1, limit: int = 12) -> List["SearchHit"]:
+        """The passages around each hit, because a fact is rarely one 40-word strip.
+
+        Retrieval ranks strips, but a question about a person, a rule or a comparison
+        is answered by the run of text the strip was cut from - the sentence before
+        names the subject, the sentence after states the consequence. The neighbours
+        are real pages, so they can be cited; they are added around the ranked hits
+        and capped so a large book cannot turn one question into an essay prompt.
+        """
+        if not hits:
+            return []
+        ordered: List[SearchHit] = []
+        seen: set = set()
+
+        def keep(hit: SearchHit) -> None:
+            if hit.chunk.chunk_id not in seen and len(ordered) < limit:
+                seen.add(hit.chunk.chunk_id)
+                ordered.append(hit)
+
+        # Every ranked hit stays, even when the neighbours do not fit: dropping the
+        # fourth hit for the sake of the first hit's next-door strip would remove
+        # evidence the search found on purpose.
+        for hit in hits:
+            keep(hit)
+        for hit in hits:
+            for offset in range(1, window + 1):
+                for chunk_id in (hit.chunk.chunk_id - offset, hit.chunk.chunk_id + offset):
+                    if chunk_id in seen:
+                        continue
+                    chunk = self._by_id.get(chunk_id)
+                    if chunk is None or chunk.front_matter:
+                        continue
+                    keep(SearchHit(
+                        chunk, score=hit.score, coverage=hit.coverage, terms=hit.terms,
+                        idf_mass=hit.idf_mass, concepts=hit.concepts, ideas=hit.ideas, focus=hit.focus,
+                    ))
+        return ordered
 
     def sections(self) -> List[Tuple[int, str]]:
         """The document's own headings, in reading order, with the page each one opens.
